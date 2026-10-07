@@ -8,7 +8,7 @@ import {
   CnpgKubernetesService,
   cnpgKubernetesServiceRef,
 } from './service/CnpgKubernetesService';
-import { PostgresCluster } from '@internal/backstage-plugin-cnpg-common';
+import { PostgresCluster, Project } from '@internal/backstage-plugin-cnpg-common';
 
 const ordersDb: PostgresCluster = {
   apiVersion: 'cnpg.cncp.nl/v1alpha1',
@@ -31,6 +31,21 @@ const ordersDb: PostgresCluster = {
   },
 };
 
+const demoProject: Project = {
+  apiVersion: 'platform.cncp.nl/v1alpha1',
+  kind: 'Project',
+  metadata: { name: 'demo', creationTimestamp: '2026-10-07T08:00:00Z' },
+  spec: { owner: 'team-demo', deletionProtection: true },
+  status: {
+    namespace: 'demo',
+    grafana: { url: 'http://grafana-demo.example.com' },
+    conditions: [
+      { type: 'Ready', status: 'True' },
+      { type: 'Synced', status: 'True' },
+    ],
+  },
+};
+
 function fakeK8s() {
   return {
     list: jest.fn(async () => [ordersDb]),
@@ -42,6 +57,12 @@ function fakeK8s() {
     apply: jest.fn(async (o: any) => ({ ...ordersDb, metadata: { name: o.name, namespace: o.namespace } })),
     delete: jest.fn(async () => undefined),
     namespaces: jest.fn(async () => ['demo', 'payments']),
+    listProjects: jest.fn(async () => [demoProject]),
+    getProject: jest.fn(async (name: string) => {
+      if (name === 'demo') return demoProject;
+      throw new NotFoundError(`Project ${name} not found`);
+    }),
+    applyProject: jest.fn(async (o: any) => ({ ...demoProject, metadata: { name: o.name } })),
   };
 }
 
@@ -78,8 +99,90 @@ describe('cnpg backend', () => {
         pooler: true,
         backup: false,
         owner: 'team-orders',
+        project: 'demo',
+        grafanaUrl: 'http://grafana-demo.example.com',
       }),
     ]);
+  });
+
+  it('leaves clusters outside a project without project info', async () => {
+    const k8s = fakeK8s();
+    k8s.listProjects.mockResolvedValue([]);
+    const server = await start(k8s);
+    const res = await request(server).get('/api/cnpg/clusters');
+    expect(res.body.items[0].project).toBeUndefined();
+    expect(res.body.items[0].grafanaUrl).toBeUndefined();
+  });
+
+  it('adds the project to cluster details', async () => {
+    const k8s = fakeK8s();
+    k8s.details.mockResolvedValue({
+      summary: { name: 'orders-db', namespace: 'demo' },
+      resource: ordersDb,
+      pods: [],
+      events: [],
+    });
+    const server = await start(k8s);
+    const res = await request(server).get('/api/cnpg/clusters/demo/orders-db');
+    expect(res.status).toBe(200);
+    expect(res.body.summary).toMatchObject({
+      project: 'demo',
+      grafanaUrl: 'http://grafana-demo.example.com',
+    });
+  });
+
+  it('lists projects as summaries', async () => {
+    const server = await start(fakeK8s());
+    const res = await request(server).get('/api/cnpg/projects');
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([
+      expect.objectContaining({
+        name: 'demo',
+        owner: 'team-demo',
+        ready: true,
+        deletionProtection: true,
+        prometheus: true,
+        grafana: true,
+        grafanaUrl: 'http://grafana-demo.example.com',
+      }),
+    ]);
+  });
+
+  it('creates a project with the owner in spec and label', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    const res = await request(server)
+      .post('/api/cnpg/projects')
+      .send({
+        name: 'team-a',
+        owner: 'team-a',
+        description: 'A team',
+        spec: { quota: { cpu: '4' } },
+      });
+    expect(res.status).toBe(201);
+    expect(k8s.applyProject).toHaveBeenCalledWith({
+      name: 'team-a',
+      spec: { quota: { cpu: '4' }, owner: 'team-a', description: 'A team' },
+      labels: { 'backstage.io/owner': 'team-a' },
+      createOnly: true,
+      dryRun: undefined,
+    });
+  });
+
+  it('rejects project names the XRD would reject', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    for (const name of ['Bad_Name', 'a--b']) {
+      const res = await request(server).post('/api/cnpg/projects').send({ name });
+      expect(res.status).toBe(400);
+    }
+    expect(k8s.applyProject).not.toHaveBeenCalled();
+  });
+
+  it('maps a missing project to 404', async () => {
+    const server = await start(fakeK8s());
+    const res = await request(server).get('/api/cnpg/projects/nope');
+    expect(res.status).toBe(404);
   });
 
   it('creates a cluster with server-side apply and the owner label', async () => {
@@ -128,5 +231,8 @@ describe('cnpg backend', () => {
     const res = await request(server).delete('/api/cnpg/clusters/demo/orders-db');
     expect(res.status).toBe(403);
     expect(k8s.delete).not.toHaveBeenCalled();
+    const created = await request(server).post('/api/cnpg/projects').send({ name: 'team-a' });
+    expect(created.status).toBe(403);
+    expect(k8s.applyProject).not.toHaveBeenCalled();
   });
 });

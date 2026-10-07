@@ -52,19 +52,69 @@ describe('PostgresClusterEntityProvider', () => {
     });
   });
 
+  it('links a cluster to its project and prefers the project Grafana', () => {
+    const entity = make().toEntity(cluster, {
+      name: 'payments',
+      ready: true,
+      synced: true,
+      deleting: false,
+      deletionProtection: true,
+      prometheus: true,
+      grafana: true,
+      grafanaUrl: 'http://grafana-payments.example.com',
+    });
+    expect(entity.spec?.dependsOn).toEqual(['resource:default/payments']);
+    expect(entity.metadata.links).toContainEqual({
+      url: 'http://grafana-payments.example.com/d/cnpg-abc',
+      title: 'Grafana dashboard',
+    });
+  });
+
+  it('maps a Project to a project Resource entity', () => {
+    const entity = make().toProjectEntity({
+      apiVersion: 'platform.cncp.nl/v1alpha1',
+      kind: 'Project',
+      metadata: { name: 'payments' },
+      spec: { owner: 'team-payments', description: 'Payment services' },
+      status: { grafana: { url: 'http://grafana-payments.example.com' } },
+    });
+    expect(entity).toMatchObject({
+      kind: 'Resource',
+      metadata: {
+        name: 'payments',
+        description: 'Payment services',
+        annotations: {
+          'platform.cncp.nl/project': 'payments',
+          'backstage.io/kubernetes-namespace': 'payments',
+        },
+      },
+      spec: { type: 'project', owner: 'team-payments' },
+    });
+    expect(entity.metadata.links).toEqual([
+      { url: 'https://portal.example.com/cnpg/projects/payments', title: 'CNPG portal' },
+      { url: 'http://grafana-payments.example.com', title: 'Grafana' },
+    ]);
+  });
+
   it('falls back to the default owner', () => {
     const entity = make().toEntity({ ...cluster, metadata: { name: 'a', namespace: 'b' } });
     expect(entity.spec?.owner).toBe('group:default/guests');
   });
 
   it('replaces the full entity set on refresh', async () => {
-    const provider = make({ list: jest.fn(async () => [cluster]) });
+    const provider = make({
+      list: jest.fn(async () => [cluster]),
+      listProjects: jest.fn(async () => [
+        { apiVersion: 'platform.cncp.nl/v1alpha1', kind: 'Project', metadata: { name: 'payments' }, spec: {} },
+      ]),
+    });
     const connection = { applyMutation: jest.fn(), refresh: jest.fn() };
     await provider.connect(connection);
     await provider.refresh();
-    expect(connection.applyMutation).toHaveBeenCalledWith({
-      type: 'full',
-      entities: [expect.objectContaining({ locationKey: 'cnpg-postgresclusters' })],
-    });
+    const { entities } = connection.applyMutation.mock.calls[0][0];
+    expect(connection.applyMutation.mock.calls[0][0].type).toBe('full');
+    expect(entities.map((e: any) => e.entity.metadata.name)).toEqual(['payments', 'payments--payments-db']);
+    expect(entities.every((e: any) => e.locationKey === 'cnpg-postgresclusters')).toBe(true);
+    expect(entities[1].entity.spec.dependsOn).toEqual(['resource:default/payments']);
   });
 });

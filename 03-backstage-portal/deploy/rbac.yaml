@@ -1,11 +1,15 @@
 # What the portal's backend may do in the platform cluster: manage
-# PostgresClusters, and read the CNPG Clusters, pods, events and namespaces it
+# PostgresClusters, create Projects, and read the CNPG Clusters, pods, events and namespaces it
 # shows on the detail page. It never touches CNPG objects directly -- every
 # write goes through the PostgresCluster API (and so through the XRD schema).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: backstage
+  labels:
+    # Backstage's own database (database.yaml) lives here, outside any
+    # Project; exempt from the optional require-project policy.
+    platform.cncp.nl/allow-unmanaged-postgres: "true"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -21,6 +25,12 @@ rules:
   - apiGroups: [cnpg.cncp.nl]
     resources: [postgresclusters]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Projects (namespace + Prometheus + Grafana): list them for the project
+  # picker and create new ones. No delete: removing a project removes every
+  # database in it, which stays a kubectl decision (see deletionProtection).
+  - apiGroups: [platform.cncp.nl]
+    resources: [projects]
+    verbs: [get, list, watch, create, patch]
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters]
     verbs: [get, list, watch]

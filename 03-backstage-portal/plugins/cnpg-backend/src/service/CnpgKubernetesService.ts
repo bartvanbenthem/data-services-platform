@@ -24,6 +24,11 @@ import {
   InstancePod,
   PostgresCluster,
   PostgresClusterDetails,
+  Project,
+  PROJECT_GROUP,
+  PROJECT_KIND,
+  PROJECT_PLURAL,
+  PROJECT_VERSION,
   summarize,
   XR_GROUP,
   XR_KIND,
@@ -189,6 +194,85 @@ export class CnpgKubernetesService {
       `PostgresCluster ${namespace}/${name}`,
     );
     this.#logger.info(`Deleted PostgresCluster ${namespace}/${name}`);
+  }
+
+  /**
+   * Every Project. An empty list when the Project API isn't installed, so
+   * the portal keeps working on clusters with only the PostgresCluster API.
+   */
+  async listProjects(): Promise<Project[]> {
+    try {
+      const res = await this.#call(() =>
+        this.#custom.listClusterCustomObject({
+          group: PROJECT_GROUP,
+          version: PROJECT_VERSION,
+          plural: PROJECT_PLURAL,
+        }),
+      );
+      return (res.items ?? []) as Project[];
+    } catch (e) {
+      if (e instanceof NotFoundError) return [];
+      throw e;
+    }
+  }
+
+  async getProject(name: string): Promise<Project> {
+    return (await this.#call(
+      () =>
+        this.#custom.getClusterCustomObject({
+          group: PROJECT_GROUP,
+          version: PROJECT_VERSION,
+          plural: PROJECT_PLURAL,
+          name,
+        }),
+      `Project ${name}`,
+    )) as Project;
+  }
+
+  /**
+   * Creates a Project with server-side apply; like {@link apply}, the API
+   * server validates the spec (and the name) against the XRD.
+   */
+  async applyProject(options: {
+    name: string;
+    spec: Record<string, unknown>;
+    labels?: Record<string, string>;
+    createOnly?: boolean;
+    dryRun?: boolean;
+  }): Promise<Project> {
+    const { name, spec, labels, createOnly, dryRun } = options;
+    if (createOnly) {
+      const existing = await this.getProject(name).catch(e => {
+        if (e instanceof NotFoundError) return undefined;
+        throw e;
+      });
+      if (existing) {
+        throw new ConflictError(`Project ${name} already exists`);
+      }
+    }
+    const body = {
+      apiVersion: `${PROJECT_GROUP}/${PROJECT_VERSION}`,
+      kind: PROJECT_KIND,
+      metadata: {
+        name,
+        labels: { ...labels, 'app.kubernetes.io/managed-by': 'backstage' },
+      },
+      spec,
+    };
+    const result = await this.#call(() =>
+      this.#objects.patch(
+        body,
+        undefined,
+        dryRun ? 'All' : undefined,
+        FIELD_MANAGER,
+        true,
+        PatchStrategy.ServerSideApply,
+      ),
+    );
+    if (!dryRun) {
+      this.#logger.info(`Applied Project ${name}`);
+    }
+    return result as unknown as Project;
   }
 
   async namespaces(): Promise<string[]> {

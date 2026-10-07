@@ -1,5 +1,5 @@
 import { createMockActionContext } from '@backstage/plugin-scaffolder-node-test-utils';
-import { createPostgresClusterAction, prune } from './scaffolder';
+import { createPostgresClusterAction, createProjectAction, prune } from './scaffolder';
 
 describe('cnpg:postgrescluster:create', () => {
   it('prunes empty optional values', () => {
@@ -36,5 +36,54 @@ describe('cnpg:postgrescluster:create', () => {
     });
     expect(ctx.output).toHaveBeenCalledWith('portalPath', '/cnpg/demo/orders-db');
     expect(ctx.output).toHaveBeenCalledWith('entityRef', 'resource:default/demo--orders-db');
+  });
+
+  it('takes the namespace from a project entity ref', async () => {
+    const k8s = { apply: jest.fn(async () => ({})) };
+    const action = createPostgresClusterAction(k8s as any);
+    const ctx = createMockActionContext({
+      input: { name: 'orders-db', namespace: 'resource:default/team-orders', spec: {} },
+    });
+    await action.handler(ctx);
+    expect(k8s.apply).toHaveBeenCalledWith(expect.objectContaining({ namespace: 'team-orders' }));
+    expect(ctx.output).toHaveBeenCalledWith('namespace', 'team-orders');
+    expect(ctx.output).toHaveBeenCalledWith('entityRef', 'resource:default/team-orders--orders-db');
+  });
+});
+
+describe('cnpg:project:create', () => {
+  it('applies the project and drops empty access entries and quota', async () => {
+    const k8s = { applyProject: jest.fn(async () => ({})) };
+    const action = createProjectAction(k8s as any);
+    const ctx = createMockActionContext({
+      input: {
+        name: 'team-orders',
+        owner: 'group:default/team-orders',
+        description: 'Orders',
+        spec: {
+          access: [
+            { group: 'orders-devs', role: 'edit' },
+            { group: '', role: '' },
+          ],
+          quota: { cpu: '', memory: '', storage: '' },
+          observability: { prometheus: { retention: '7d' }, grafana: { ingress: true } },
+        },
+      },
+    });
+    await action.handler(ctx);
+    expect(k8s.applyProject).toHaveBeenCalledWith({
+      name: 'team-orders',
+      spec: {
+        access: [{ group: 'orders-devs', role: 'edit' }],
+        observability: { prometheus: { retention: '7d' }, grafana: { ingress: true } },
+        owner: 'team-orders',
+        description: 'Orders',
+      },
+      labels: { 'backstage.io/owner': 'team-orders' },
+      createOnly: true,
+      dryRun: undefined,
+    });
+    expect(ctx.output).toHaveBeenCalledWith('entityRef', 'resource:default/team-orders');
+    expect(ctx.output).toHaveBeenCalledWith('portalPath', '/cnpg/projects/team-orders');
   });
 });

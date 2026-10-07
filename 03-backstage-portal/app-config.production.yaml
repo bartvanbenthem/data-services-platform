@@ -52,6 +52,12 @@ catalog:
       rules:
         - allow: [Template]
 
+    # Software Template: create a Project (namespace + Prometheus + Grafana)
+    - type: file
+      target: ./templates/project/template.yaml
+      rules:
+        - allow: [Template]
+
     # Local example organizational data
     - type: file
       target: ./examples/org.yaml

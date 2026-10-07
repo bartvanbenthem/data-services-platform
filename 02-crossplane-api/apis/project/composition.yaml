@@ -1,0 +1,455 @@
+# Composition for platform.cncp.nl/v1alpha1 Project (see definition.yaml).
+#
+# Composes, for Project <name>:
+#   Namespace <name>                      labels platform.cncp.nl/project and
+#                                         dashboards.paas.cncp.nl/scope = <name>
+#   ClusterRoleBinding platform:project:<name>:prometheus
+#                                         -> ClusterRole cnpg-platform:project-prometheus
+#                                            (../../install/rbac.yaml)
+#   ServiceAccount + Prometheus           scrapes the namespace's PodMonitors/
+#                                         PrometheusRules, the CNPG operator's
+#                                         PodMonitor + the cluster metrics
+#                                         from kube-prometheus-stack
+#   Grafana + GrafanaDatasource           what PostgresCluster dashboards import into
+#   RoleBinding per spec.access entry
+#   ResourceQuota + LimitRange            only with spec.quota
+#
+# Cluster-wide settings come from the EnvironmentConfig "project-defaults"
+# (example: ../../examples/project-defaults.yaml); every key is optional and
+# falls back to the defaults below, so the composition works without it.
+#
+# Namespaced objects are only rendered once the Namespace is observed, so the
+# first reconcile never fails on "namespace not found".
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: project
+  labels:
+    platform.cncp.nl/api: project
+spec:
+  compositeTypeRef:
+    apiVersion: platform.cncp.nl/v1alpha1
+    kind: Project
+  mode: Pipeline
+  pipeline:
+    - step: render
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec | default (dict) }}
+            {{- $name := $xr.metadata.name }}
+            {{- $ns := $name }}
+            {{- $observed := .observed.resources | default (dict) }}
+
+            {{- /* ---- cluster-wide settings: EnvironmentConfig project-defaults ---- */}}
+            ---
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              defaults:
+                apiVersion: apiextensions.crossplane.io/v1beta1
+                kind: EnvironmentConfig
+                matchName: project-defaults
+            {{- $env := dict }}
+            {{- with (index (.extraResources | default (dict)) "defaults") }}
+            {{- with .items }}{{ $env = dig "resource" "data" (dict) (first .) }}{{ end }}
+            {{- end }}
+            {{- $clusterMetrics := dig "prometheus" "clusterMetrics" (dict) $env }}
+            {{- $cmEnabled := dig "enabled" true $clusterMetrics }}
+            {{- $cmNamespace := dig "namespace" "prometheus-operator-system" $clusterMetrics }}
+            {{- $cmLabels := dig "serviceMonitorLabels" (dict "release" "prometheus-operator") $clusterMetrics }}
+            {{- $cmExclude := dig "excludeApps" (list "kube-prometheus-stack-apiserver" "kube-prometheus-stack-coredns" "kube-prometheus-stack-kube-controller-manager" "kube-prometheus-stack-kube-etcd" "kube-prometheus-stack-kube-proxy" "kube-prometheus-stack-kube-scheduler" "kube-prometheus-stack-operator") $clusterMetrics }}
+            {{- $operatorMetrics := dig "prometheus" "operatorMetrics" (dict) $env }}
+            {{- $omEnabled := dig "enabled" true $operatorMetrics }}
+            {{- $omNamespace := dig "namespace" "cnpg-system" $operatorMetrics }}
+            {{- $ingress := dig "grafana" "ingress" (dict) $env }}
+            {{- $hostTemplate := dig "hostTemplate" "" $ingress }}
+
+            {{- /* ---- spec, with the XRD defaults repeated for `crossplane render` and older objects ---- */}}
+            {{- $obs := $spec.observability | default (dict) }}
+            {{- $prom := $obs.prometheus | default (dict) }}
+            {{- $promEnabled := dig "enabled" true $prom }}
+            {{- $graf := $obs.grafana | default (dict) }}
+            {{- $grafEnabled := dig "enabled" true $graf }}
+            {{- $host := "" }}
+            {{- if and $grafEnabled (dig "ingress" true $graf) $hostTemplate }}{{ $host = replace "{project}" $name $hostTemplate }}{{ end }}
+            {{- $scheme := dig "scheme" "http" $ingress }}
+            {{- $quota := $spec.quota | default (dict) }}
+            {{- $scope := dict "dashboards.paas.cncp.nl/scope" $ns }}
+            {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "platform.cncp.nl/project" $name }}
+
+            {{- /* ---- readiness from observed state ---- */}}
+            {{- $nsObs := index $observed "namespace" }}
+            {{- $nsReady := and $nsObs (eq (dig "resource" "status" "phase" "" $nsObs) "Active") }}
+            {{- $promReady := false }}
+            {{- with index $observed "prometheus" }}
+            {{- range (dig "resource" "status" "conditions" (list) .) }}
+            {{- if and (eq .type "Available") (eq .status "True") }}{{ $promReady = true }}{{ end }}
+            {{- end }}
+            {{- end }}
+            {{- $grafReady := false }}
+            {{- with index $observed "grafana" }}
+            {{- $gs := dig "resource" "status" (dict) . }}
+            {{- $grafReady = and (eq (dig "stage" "" $gs) "complete") (eq (dig "stageStatus" "" $gs) "success") }}
+            {{- end }}
+            ---
+            apiVersion: v1
+            kind: Namespace
+            metadata:
+              name: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "namespace" }}
+                gotemplating.fn.crossplane.io/ready: {{ if $nsReady }}"True"{{ else }}"False"{{ end }}
+                {{- with $spec.description }}
+                platform.cncp.nl/description: {{ . | quote }}
+                {{- end }}
+              labels:
+                {{- range $k, $v := merge (dict) $labels $scope }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+                {{- with $spec.owner }}
+                backstage.io/owner: {{ . | quote }}
+                {{- end }}
+                # CNPG, Prometheus and Grafana all run under "baseline";
+                # "restricted" warnings flag workloads to harden.
+                pod-security.kubernetes.io/enforce: baseline
+                pod-security.kubernetes.io/warn: restricted
+
+            {{- if $promEnabled }}
+            ---
+            # Cluster-wide: kubelet/cAdvisor targets live on the nodes and
+            # kube-state-metrics/node-exporter in the kube-prometheus-stack
+            # namespace. One shared ClusterRole, one binding per project.
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: ClusterRoleBinding
+            metadata:
+              name: platform:project:{{ $name }}:prometheus
+              annotations:
+                {{ setResourceNameAnnotation "prometheus-clusterrolebinding" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "prometheus-clusterrolebinding" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            roleRef:
+              apiGroup: rbac.authorization.k8s.io
+              kind: ClusterRole
+              name: cnpg-platform:project-prometheus
+            subjects:
+              - kind: ServiceAccount
+                name: prometheus
+                namespace: {{ $ns }}
+            {{- end }}
+
+            {{- if $nsObs }}
+            {{- if $promEnabled }}
+            ---
+            apiVersion: v1
+            kind: ServiceAccount
+            metadata:
+              name: prometheus
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "prometheus-serviceaccount" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "prometheus-serviceaccount" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            ---
+            apiVersion: monitoring.coreos.com/v1
+            kind: Prometheus
+            metadata:
+              name: prometheus
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "prometheus" }}
+                gotemplating.fn.crossplane.io/ready: {{ if $promReady }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              serviceAccountName: prometheus
+              replicas: 1
+              retention: {{ dig "retention" "7d" $prom | quote }}
+              resources:
+                requests:
+                  cpu: {{ dig "resources" "requests" "cpu" "100m" $prom | quote }}
+                  memory: {{ dig "resources" "requests" "memory" "512Mi" $prom | quote }}
+                limits:
+                  memory: {{ dig "resources" "limits" "memory" "2Gi" $prom | quote }}
+              # Without fsGroup the PVC stays root-owned and Prometheus
+              # (non-root) crashes on "open /prometheus/queries.active".
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 2000
+                fsGroup: 2000
+                seccompProfile:
+                  type: RuntimeDefault
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    {{- with (dig "storage" "storageClass" "" $prom) }}
+                    storageClassName: {{ . | quote }}
+                    {{- end }}
+                    resources:
+                      requests:
+                        storage: {{ dig "storage" "size" "10Gi" $prom | quote }}
+              # Every PodMonitor in this namespace (what PostgresClusters
+              # create) and, with operator metrics on, the CNPG operator's,
+              # which the dashboard's operator panels query.
+              podMonitorSelector: {}
+              {{- if $omEnabled }}
+              podMonitorNamespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: In
+                    values:
+                      - {{ $ns }}
+                      - {{ $omNamespace }}
+              {{- end }}
+              # Rules from this namespace (the CNPG alerts) and, with cluster
+              # metrics on, kube-prometheus-stack's recording rules that the
+              # CNPG dashboard's CPU panels query.
+              ruleSelector: {}
+              ruleNamespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: In
+                    values:
+                      - {{ $ns }}
+                      {{- if $cmEnabled }}
+                      - {{ $cmNamespace }}
+                      {{- end }}
+              {{- if $cmEnabled }}
+              # Only the node/container ServiceMonitors from
+              # kube-prometheus-stack, not the control-plane ones.
+              serviceMonitorNamespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: {{ $cmNamespace }}
+              serviceMonitorSelector:
+                matchLabels:
+                  {{- range $k, $v := $cmLabels }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+                {{- with $cmExclude }}
+                matchExpressions:
+                  - key: app
+                    operator: NotIn
+                    values:
+                      {{- range . }}
+                      - {{ . }}
+                      {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+
+            {{- if $grafEnabled }}
+            ---
+            apiVersion: grafana.integreatly.org/v1beta1
+            kind: Grafana
+            metadata:
+              name: grafana
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "grafana" }}
+                gotemplating.fn.crossplane.io/ready: {{ if $grafReady }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := merge (dict) $labels $scope }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              config:
+                # The portal embeds the dashboards in an iframe.
+                security:
+                  allow_embedding: "true"
+                # Read-only anonymous access so the iframe works without a
+                # login. Admin login: Secret grafana-admin-credentials.
+                auth.anonymous:
+                  enabled: "true"
+                  org_role: Viewer
+                {{- if $host }}
+                server:
+                  root_url: {{ printf "%s://%s" $scheme $host | quote }}
+                {{- end }}
+              {{- if $host }}
+              ingress:
+                spec:
+                  {{- with (dig "className" "" $ingress) }}
+                  ingressClassName: {{ . | quote }}
+                  {{- end }}
+                  rules:
+                    - host: {{ $host | quote }}
+                      http:
+                        paths:
+                          - path: /
+                            pathType: Prefix
+                            backend:
+                              service:
+                                name: grafana-service
+                                port:
+                                  number: 3000
+                  {{- with (dig "tlsSecretName" "" $ingress) }}
+                  tls:
+                    - hosts: [{{ $host | quote }}]
+                      secretName: {{ . | quote }}
+                  {{- end }}
+              {{- end }}
+            {{- if $promEnabled }}
+            ---
+            # Named "prometheus": the datasource name the PostgresCluster
+            # dashboards are wired to (monitoring.grafanaDashboard.datasourceName).
+            apiVersion: grafana.integreatly.org/v1beta1
+            kind: GrafanaDatasource
+            metadata:
+              name: prometheus
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "grafana-datasource" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "grafana-datasource" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              instanceSelector:
+                matchLabels:
+                  {{- range $k, $v := $scope }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+              datasource:
+                name: prometheus
+                type: prometheus
+                access: proxy
+                url: http://prometheus-operated.{{ $ns }}.svc:9090
+                isDefault: true
+            {{- end }}
+            {{- end }}
+
+            {{- range $i, $a := $spec.access | default (list) }}
+            ---
+            apiVersion: rbac.authorization.k8s.io/v1
+            kind: RoleBinding
+            metadata:
+              name: {{ printf "project-%s-%s" $a.role (sha1sum $a.group | trunc 8) }}
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation (printf "access-%d" $i) }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed (printf "access-%d" $i) }}"True"{{ else }}"False"{{ end }}
+                platform.cncp.nl/group: {{ $a.group | quote }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            roleRef:
+              apiGroup: rbac.authorization.k8s.io
+              kind: ClusterRole
+              name: {{ $a.role }}
+            subjects:
+              - apiGroup: rbac.authorization.k8s.io
+                kind: Group
+                name: {{ $a.group | quote }}
+            {{- end }}
+
+            {{- if $quota }}
+            ---
+            apiVersion: v1
+            kind: ResourceQuota
+            metadata:
+              name: project
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "quota" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "quota" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              hard:
+                {{- with $quota.cpu }}
+                requests.cpu: {{ . | quote }}
+                {{- end }}
+                {{- with $quota.memory }}
+                requests.memory: {{ . | quote }}
+                limits.memory: {{ . | quote }}
+                {{- end }}
+                {{- with $quota.storage }}
+                requests.storage: {{ . | quote }}
+                {{- end }}
+            ---
+            # A quota on cpu/memory rejects pods without requests/limits;
+            # these defaults keep operator-generated pods (CNPG jobs, Grafana)
+            # schedulable.
+            apiVersion: v1
+            kind: LimitRange
+            metadata:
+              name: project-defaults
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "limitrange" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "limitrange" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              limits:
+                - type: Container
+                  defaultRequest:
+                    cpu: 50m
+                    memory: 64Mi
+                  default:
+                    memory: 256Mi
+            {{- end }}
+            {{- end }}
+
+            {{- /* ================= XR status ================= */}}
+            {{- $waiting := list }}
+            {{- if not $nsReady }}{{ $waiting = append $waiting "namespace" }}{{ end }}
+            {{- if and $promEnabled (not $promReady) }}{{ $waiting = append $waiting "Prometheus" }}{{ end }}
+            {{- if and $grafEnabled (not $grafReady) }}{{ $waiting = append $waiting "Grafana" }}{{ end }}
+            {{- $ready := not $waiting }}
+            {{- $msg := printf "Project %s is ready" $name }}
+            {{- if not $ready }}{{ $msg = printf "Waiting for %s" (join ", " $waiting) }}{{ end }}
+            ---
+            apiVersion: platform.cncp.nl/v1alpha1
+            kind: Project
+            status:
+              ready: {{ $ready }}
+              message: {{ $msg | quote }}
+              namespace: {{ $ns }}
+              {{- if $promEnabled }}
+              prometheus:
+                url: http://prometheus-operated.{{ $ns }}.svc:9090
+              {{- end }}
+              {{- if $grafEnabled }}
+              grafana:
+                {{- if $host }}
+                url: {{ printf "%s://%s" $scheme $host | quote }}
+                {{- end }}
+                internalUrl: http://grafana-service.{{ $ns }}.svc:3000
+                adminSecret: grafana-admin-credentials
+                instanceSelector:
+                  {{- range $k, $v := $scope }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+              {{- end }}
+            ---
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ClaimConditions
+            conditions:
+              - type: ObservabilityReady
+                status: {{ if $ready }}"True"{{ else }}"False"{{ end }}
+                reason: {{ if $ready }}Available{{ else }}Provisioning{{ end }}
+                message: {{ $msg | quote }}
+                target: Composite

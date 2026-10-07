@@ -1,0 +1,17 @@
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: project-defaults
+data:
+  prometheus:
+    clusterMetrics:
+      namespace: monitoring
+      serviceMonitorLabels:
+        release: kps
+      excludeApps: [kube-prometheus-stack-apiserver]
+  grafana:
+    ingress:
+      className: nginx
+      hostTemplate: grafana-{project}.example.com
+      scheme: https
+      tlsSecretName: wildcard-example-com

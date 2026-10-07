@@ -17,7 +17,7 @@ export const KpnSignInPage = SignInPageBlueprint.make({
             >
               <KpnLogo height={34} />
               <span style={{ fontSize: 22, fontWeight: 500, color: '#e9ebf0' }}>
-                Database Platform
+                Data Services
               </span>
             </span>
           }

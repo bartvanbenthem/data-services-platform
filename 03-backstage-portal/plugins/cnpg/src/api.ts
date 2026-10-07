@@ -8,6 +8,8 @@ import type {
   PostgresCluster,
   PostgresClusterDetails,
   PostgresClusterSummary,
+  Project,
+  ProjectSummary,
 } from '@internal/backstage-plugin-cnpg-common';
 
 export interface CnpgPortalConfig {
@@ -25,15 +27,28 @@ export interface CreateClusterRequest {
   dryRun?: boolean;
 }
 
+export interface CreateProjectRequest {
+  /** Also the namespace name. */
+  name: string;
+  owner?: string;
+  description?: string;
+  /** Further Project spec (access, quota, observability). */
+  spec?: Record<string, unknown>;
+  /** Validate against the XRD (server-side dry run) without creating anything. */
+  dryRun?: boolean;
+}
+
 /** Client for the cnpg backend plugin (/api/cnpg). */
 export interface CnpgApi {
   getConfig(): Promise<CnpgPortalConfig>;
-  listNamespaces(): Promise<string[]>;
   listClusters(namespace?: string): Promise<PostgresClusterSummary[]>;
   getCluster(namespace: string, name: string): Promise<PostgresClusterDetails>;
   createCluster(request: CreateClusterRequest): Promise<PostgresCluster>;
   updateCluster(namespace: string, name: string, spec: Record<string, unknown>): Promise<PostgresCluster>;
   deleteCluster(namespace: string, name: string): Promise<void>;
+  listProjects(): Promise<ProjectSummary[]>;
+  getProject(name: string): Promise<{ summary: ProjectSummary; resource: Project }>;
+  createProject(request: CreateProjectRequest): Promise<Project>;
 }
 
 export const cnpgApiRef = createApiRef<CnpgApi>().with({
@@ -50,10 +65,6 @@ export class CnpgClient implements CnpgApi {
 
   getConfig() {
     return this.#request<CnpgPortalConfig>('/config');
-  }
-
-  async listNamespaces() {
-    return (await this.#request<{ items: string[] }>('/namespaces')).items;
   }
 
   async listClusters(namespace?: string) {
@@ -81,6 +92,21 @@ export class CnpgClient implements CnpgApi {
 
   async deleteCluster(namespace: string, name: string) {
     await this.#request(`/clusters/${enc(namespace)}/${enc(name)}`, { method: 'DELETE' });
+  }
+
+  async listProjects() {
+    return (await this.#request<{ items: ProjectSummary[] }>('/projects')).items;
+  }
+
+  getProject(name: string) {
+    return this.#request<{ summary: ProjectSummary; resource: Project }>(`/projects/${enc(name)}`);
+  }
+
+  createProject(request: CreateProjectRequest) {
+    return this.#request<Project>('/projects', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
   }
 
   async #request<T>(path: string, init?: RequestInit): Promise<T> {

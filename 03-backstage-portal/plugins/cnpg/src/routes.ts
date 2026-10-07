@@ -26,3 +26,21 @@ export const clusterMonitoringRouteRef = createSubRouteRef({
   parent: rootRouteRef,
   path: '/:namespace/:name/monitoring',
 });
+
+/** /cnpg/projects -- the project list. */
+export const projectsRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/projects',
+});
+
+/** /cnpg/projects/create -- the create-project form. */
+export const createProjectRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/projects/create',
+});
+
+/** /cnpg/projects/:name -- one project and its clusters. */
+export const projectRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/projects/:name',
+});

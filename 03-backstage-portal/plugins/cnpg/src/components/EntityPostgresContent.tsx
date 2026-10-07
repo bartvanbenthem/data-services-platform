@@ -22,7 +22,7 @@ export const EntityPostgresContent = () => {
       <Alert
         status="warning"
         title="Not a PostgresCluster"
-        description={`Annotation ${CNPG_ANNOTATION} must be "<namespace>/<name>".`}
+        description={`Annotation ${CNPG_ANNOTATION} must be "<project>/<name>".`}
       />
     );
   }

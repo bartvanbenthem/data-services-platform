@@ -1,0 +1,133 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: project
+  title: Project (with Prometheus and Grafana)
+  description: >-
+    Create a project through the platform.cncp.nl Project API, with
+    its own Prometheus and Grafana, RoleBindings for your team and an optional quota.
+    PostgreSQL clusters created in the project report to that Prometheus and Grafana.
+  tags: [project, observability]
+spec:
+  owner: group:default/guests
+  type: resource
+
+  parameters:
+    - title: Project
+      required: [name, owner]
+      properties:
+        name:
+          title: Name
+          type: string
+          description: Lowercase letters, digits and single "-", max 40 characters.
+          pattern: '^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$'
+          ui:autofocus: true
+        owner:
+          title: Owner
+          type: string
+          description: Group that owns the project and its databases.
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        description:
+          title: Description
+          type: string
+          maxLength: 200
+
+    - title: Access and quota
+      properties:
+        editGroup:
+          title: Kubernetes group with edit access
+          type: string
+          description: Optional. A group from your identity provider; gets the built-in "edit" role in the project.
+        viewGroup:
+          title: Kubernetes group with view access
+          type: string
+          description: Optional. Gets the built-in "view" role.
+        quota:
+          title: Limit total resources
+          type: boolean
+          default: false
+      dependencies:
+        quota:
+          oneOf:
+            - properties:
+                quota:
+                  const: false
+            - properties:
+                quota:
+                  const: true
+                quotaCpu:
+                  title: Total CPU requests
+                  type: string
+                  default: '8'
+                quotaMemory:
+                  title: Total memory
+                  type: string
+                  default: 32Gi
+                  pattern: '^[0-9]+(Mi|Gi|Ti)$'
+                quotaStorage:
+                  title: Total storage
+                  type: string
+                  default: 200Gi
+                  pattern: '^[0-9]+(Mi|Gi|Ti)$'
+
+    - title: Observability
+      properties:
+        prometheusRetention:
+          title: Metrics retention
+          type: string
+          default: 7d
+          pattern: '^[0-9]+(h|d|w|y)$'
+        prometheusStorage:
+          title: Prometheus volume size
+          type: string
+          default: 10Gi
+          pattern: '^[0-9]+(Mi|Gi|Ti)$'
+        grafanaIngress:
+          title: Expose Grafana through the cluster ingress
+          type: boolean
+          default: true
+
+  steps:
+    - id: create
+      name: Create Project
+      action: cnpg:project:create
+      input:
+        name: ${{ parameters.name }}
+        owner: ${{ parameters.owner }}
+        description: ${{ parameters.description }}
+        # Empty optional values are pruned by the action: an unset group or a
+        # disabled quota doesn't reach the API.
+        spec:
+          access:
+            - group: ${{ parameters.editGroup }}
+              role: ${{ 'edit' if parameters.editGroup else '' }}
+            - group: ${{ parameters.viewGroup }}
+              role: ${{ 'view' if parameters.viewGroup else '' }}
+          quota:
+            cpu: ${{ parameters.quotaCpu if parameters.quota else '' }}
+            memory: ${{ parameters.quotaMemory if parameters.quota else '' }}
+            storage: ${{ parameters.quotaStorage if parameters.quota else '' }}
+          observability:
+            prometheus:
+              retention: ${{ parameters.prometheusRetention }}
+              storage:
+                size: ${{ parameters.prometheusStorage }}
+            grafana:
+              ingress: ${{ parameters.grafanaIngress }}
+
+  output:
+    links:
+      - title: Open in the PostgreSQL portal
+        url: ${{ steps['create'].output.portalPath }}
+      - title: Catalog entity (appears within ~30s)
+        icon: catalog
+        entityRef: ${{ steps['create'].output.entityRef }}
+    text:
+      - title: Next
+        content: |
+          Project `${{ parameters.name }}` gets its Prometheus and Grafana within a few
+          minutes. Create PostgreSQL clusters in it with the *PostgreSQL cluster (CloudNativePG)*
+          template; their metrics, alerts and dashboards land in this project's Grafana.

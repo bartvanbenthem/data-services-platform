@@ -121,7 +121,7 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) =
     <>
       <Header
         title={name}
-        tags={[{ label: `namespace: ${namespace}` }]}
+        tags={[{ label: `project: ${namespace}` }]}
         tabs={tabs}
         activeTabId={tab}
         customActions={
@@ -141,7 +141,7 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) =
         {value && tab === 'overview' && <ClusterDetails details={value} />}
         {value && tab === 'monitoring' && (
           <GrafanaDashboard
-            grafanaUrl={config?.grafanaUrl}
+            grafanaUrl={value.summary.grafanaUrl ?? config?.grafanaUrl}
             namespace={namespace}
             name={name}
             uid={value.summary.dashboardUid}

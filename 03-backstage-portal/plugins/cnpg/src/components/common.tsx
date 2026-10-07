@@ -1,5 +1,8 @@
-import { Alert, Flex, Text } from '@backstage/ui';
-import type { PostgresClusterSummary } from '@internal/backstage-plugin-cnpg-common';
+import { Alert, Button, Card, CardBody, CardHeader, Flex, Grid, Text } from '@backstage/ui';
+import type {
+  PostgresClusterSummary,
+  ProjectSummary,
+} from '@internal/backstage-plugin-cnpg-common';
 import { ReactNode } from 'react';
 
 /** Database glyph used for the nav item and the entity tab. */
@@ -33,8 +36,14 @@ const HEALTH: Record<Health, { label: string; color: string }> = {
   deleting: { label: 'Deleting', color: 'var(--bui-fg-secondary, #59636e)' },
 };
 
-export const HealthBadge = ({ cluster }: { cluster: PostgresClusterSummary }) => {
-  const { label, color } = HEALTH[health(cluster)];
+/** A project is healthy once its namespace, Prometheus and Grafana are up. */
+export function projectHealth(p: ProjectSummary): Health {
+  if (p.deleting) return 'deleting';
+  return p.ready ? 'healthy' : 'progressing';
+}
+
+const StatusDot = ({ health: h }: { health: Health }) => {
+  const { label, color } = HEALTH[h];
   return (
     <Flex align="center" gap="1">
       <span
@@ -45,6 +54,14 @@ export const HealthBadge = ({ cluster }: { cluster: PostgresClusterSummary }) =>
     </Flex>
   );
 };
+
+export const HealthBadge = ({ cluster }: { cluster: PostgresClusterSummary }) => (
+  <StatusDot health={health(cluster)} />
+);
+
+export const ProjectHealthBadge = ({ project }: { project: ProjectSummary }) => (
+  <StatusDot health={projectHealth(project)} />
+);
 
 export function age(timestamp?: string): string {
   if (!timestamp) return '-';
@@ -113,4 +130,107 @@ export const Fields = ({ rows }: { rows: Array<[string, ReactNode]> }) => (
 
 export const Mono = ({ children }: { children: ReactNode }) => (
   <code style={{ fontFamily: 'var(--bui-font-monospace, monospace)', fontSize: '0.85em' }}>{children}</code>
+);
+
+/** A titled card holding a two-column grid of form fields. */
+export const Section = ({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) => (
+  <Card>
+    <CardHeader>
+      <Flex direction="column" gap="1">
+        <Text variant="title-x-small" as="h3">
+          {title}
+        </Text>
+        {description && (
+          <Text variant="body-small" color="secondary">
+            {description}
+          </Text>
+        )}
+      </Flex>
+    </CardHeader>
+    <CardBody>
+      <Grid.Root columns={{ initial: '1', md: '2' }} gap="3">
+        {children}
+      </Grid.Root>
+    </CardBody>
+  </Card>
+);
+
+/**
+ * Right-hand column of the create forms: live manifest preview, Validate
+ * (server-side dry run against the XRD) and Create.
+ */
+export const ManifestPanel = ({
+  manifest,
+  hasErrors,
+  error,
+  validated,
+  submitting,
+  onSubmit,
+  createLabel,
+}: {
+  manifest: string;
+  hasErrors: boolean;
+  error?: Error;
+  validated?: boolean;
+  submitting?: 'validate' | 'create';
+  onSubmit: (dryRun: boolean) => void;
+  createLabel: string;
+}) => (
+  <Flex direction="column" gap="3" style={{ position: 'sticky', top: 16 }}>
+    <Card>
+      <CardHeader>
+        <Text variant="title-x-small" as="h3">
+          Manifest
+        </Text>
+      </CardHeader>
+      <CardBody>
+        <pre
+          style={{
+            margin: 0,
+            fontSize: 12,
+            lineHeight: 1.5,
+            overflow: 'auto',
+            maxHeight: '55vh',
+          }}
+        >
+          {manifest}
+        </pre>
+      </CardBody>
+    </Card>
+    {hasErrors && <Alert status="warning" title="Fix the highlighted fields first" />}
+    {error && <ErrorAlert error={error} />}
+    {validated && (
+      <Alert
+        status="success"
+        title="Valid"
+        description="The API server accepted this manifest (dry run)."
+      />
+    )}
+    <Flex gap="2" justify="end">
+      <Button
+        variant="secondary"
+        loading={submitting === 'validate'}
+        isDisabled={Boolean(submitting)}
+        onPress={() => onSubmit(true)}
+      >
+        Validate
+      </Button>
+      <Button
+        variant="primary"
+        loading={submitting === 'create'}
+        isDisabled={Boolean(submitting)}
+        onPress={() => onSubmit(false)}
+      >
+        {createLabel}
+      </Button>
+    </Flex>
+  </Flex>
 );

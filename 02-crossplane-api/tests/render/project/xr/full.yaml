@@ -1,0 +1,22 @@
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: team-payments
+spec:
+  owner: team-payments
+  description: Payment services
+  access:
+    - group: payments-devs
+      role: edit
+    - group: auditors
+      role: view
+  quota:
+    cpu: "8"
+    memory: 32Gi
+    storage: 200Gi
+  observability:
+    prometheus:
+      retention: 30d
+      storage:
+        size: 50Gi
+        storageClass: fast

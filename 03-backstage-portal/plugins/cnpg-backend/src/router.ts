@@ -16,15 +16,20 @@ import {
   cnpgClusterDeletePermission,
   cnpgClusterReadPermission,
   cnpgClusterUpdatePermission,
+  cnpgProjectCreatePermission,
+  cnpgProjectReadPermission,
+  Project,
+  PostgresClusterSummary,
+  summarize,
+  summarizeProject,
 } from '@internal/backstage-plugin-cnpg-common';
 import { CnpgKubernetesService } from './service/CnpgKubernetesService';
-import { summarize } from '@internal/backstage-plugin-cnpg-common';
 
 // DNS-1123 label, short enough that CNPG's derived names (<name>-pooler-rw,
 // <name>-1, ...) stay within Kubernetes' limits.
 const NAME = /^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$/;
 const name = z.string().regex(NAME, 'lowercase letters, digits and "-", max 40 characters');
-const namespace = z.string().regex(/^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/, 'invalid namespace');
+const namespace = z.string().regex(/^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/, 'invalid project');
 const labelValue = z.string().regex(/^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$/).max(63);
 
 const createSchema = z.object({
@@ -39,6 +44,29 @@ const createSchema = z.object({
 const updateSchema = z.object({
   spec: z.record(z.unknown()),
 });
+
+const createProjectSchema = z.object({
+  // Also the namespace name; the XRD enforces the same rules.
+  name: name.refine(v => !v.includes('--'), 'must not contain "--"'),
+  owner: labelValue.optional(),
+  description: z.string().max(200).optional(),
+  /** Passed through to the XR; validated by the API server against the XRD. */
+  spec: z.record(z.unknown()).optional(),
+  dryRun: z.boolean().optional(),
+});
+
+/** Adds the cluster's Project (same name as its namespace) and that project's Grafana. */
+function withProject(
+  summary: PostgresClusterSummary,
+  project: Project | undefined,
+): PostgresClusterSummary {
+  if (!project) return summary;
+  return {
+    ...summary,
+    project: project.metadata.name,
+    grafanaUrl: project.status?.grafana?.url || undefined,
+  };
+}
 
 export async function createRouter(options: {
   httpAuth: HttpAuthService;
@@ -86,14 +114,55 @@ export async function createRouter(options: {
   router.get('/clusters', async (req, res) => {
     await authorize(req, cnpgClusterReadPermission);
     const ns = typeof req.query.namespace === 'string' ? req.query.namespace : undefined;
-    const items = await k8s.list(ns);
-    res.json({ items: items.map(summarize) });
+    const [items, projects] = await Promise.all([k8s.list(ns), k8s.listProjects()]);
+    const byName = new Map(projects.map(p => [p.metadata.name, p]));
+    res.json({ items: items.map(c => withProject(summarize(c), byName.get(c.metadata.namespace))) });
   });
 
   router.get('/clusters/:namespace/:name', async (req, res) => {
     await authorize(req, cnpgClusterReadPermission);
     const p = params(req);
-    res.json(await k8s.details(p.namespace, p.name));
+    const [details, project] = await Promise.all([
+      k8s.details(p.namespace, p.name),
+      // Not a project namespace, or no Project API: no project info.
+      k8s.getProject(p.namespace).catch(() => undefined),
+    ]);
+    res.json({ ...details, summary: withProject(details.summary, project) });
+  });
+
+  router.get('/projects', async (req, res) => {
+    await authorize(req, cnpgProjectReadPermission);
+    const items = await k8s.listProjects();
+    res.json({
+      items: items.map(summarizeProject).sort((a, b) => a.name.localeCompare(b.name)),
+    });
+  });
+
+  router.get('/projects/:name', async (req, res) => {
+    await authorize(req, cnpgProjectReadPermission);
+    const parsed = z.object({ name }).safeParse(req.params);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const resource = await k8s.getProject(parsed.data.name);
+    res.json({ summary: summarizeProject(resource), resource });
+  });
+
+  router.post('/projects', async (req, res) => {
+    await authorize(req, cnpgProjectCreatePermission);
+    const parsed = createProjectSchema.safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { name: projectName, owner, description, spec, dryRun } = parsed.data;
+    const created = await k8s.applyProject({
+      name: projectName,
+      spec: {
+        ...spec,
+        ...(owner ? { owner } : {}),
+        ...(description ? { description } : {}),
+      },
+      labels: owner ? { 'backstage.io/owner': owner } : undefined,
+      createOnly: true,
+      dryRun,
+    });
+    res.status(dryRun ? 200 : 201).json(created);
   });
 
   router.post('/clusters', async (req, res) => {

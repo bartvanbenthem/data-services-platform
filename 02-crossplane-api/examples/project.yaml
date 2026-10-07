@@ -1,0 +1,23 @@
+# A Project is a namespace with its own Prometheus and Grafana, ready for
+# PostgresClusters: create one with `namespace: team-payments` and its
+# metrics, alerts and dashboard land in this project's Prometheus/Grafana.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: team-payments
+spec:
+  owner: team-payments
+  description: Payment services
+  # Kubernetes groups from your IdP.
+  access:
+    - group: payments-devs
+      role: edit
+  quota:
+    cpu: "8"
+    memory: 32Gi
+    storage: 200Gi
+  observability:
+    prometheus:
+      retention: 15d
+      storage:
+        size: 20Gi

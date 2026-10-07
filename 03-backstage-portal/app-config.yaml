@@ -1,5 +1,5 @@
 app:
-  title: KPN Database Platform
+  title: KPN Data Services
   baseUrl: http://localhost:3000
 
   # CNPG-only portal: load just the catalog (for the PostgresCluster entities)
@@ -120,6 +120,12 @@ catalog:
       rules:
         - allow: [Template]
 
+    # Software Template: create a Project (namespace + Prometheus + Grafana)
+    - type: file
+      target: ../../templates/project/template.yaml
+      rules:
+        - allow: [Template]
+
     # Local example organizational data
     - type: file
       target: ../../examples/org.yaml
@@ -165,5 +171,5 @@ permission:
 
 # see https://backstage.io/docs/ai/mcp-actions for more details
 mcpActions:
-  name: 'KPN Database Platform'
+  name: 'KPN Data Services'
   description: 'Tools for managing CloudNativePG PostgreSQL clusters'

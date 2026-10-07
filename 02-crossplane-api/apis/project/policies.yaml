@@ -1,0 +1,78 @@
+# Guardrails for Projects (ValidatingAdmissionPolicy, Kubernetes >= 1.30).
+#
+# Deleting a Project deletes its namespace, and with it every PostgresCluster,
+# its volumes and its Prometheus/Grafana. These two policies make that an
+# explicit decision:
+#
+#   1. A Project with spec.deletionProtection: true (the default) can't be
+#      deleted. Patch it to false first.
+#   2. A project namespace can't be deleted directly, only by Crossplane (or
+#      the garbage collector) when its Project goes away. Otherwise
+#      `kubectl delete ns` would bypass rule 1.
+#
+# install/install.sh replaces "crossplane-system" below with
+# $CROSSPLANE_NAMESPACE.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform.cncp.nl-project-deletion-protection
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [platform.cncp.nl]
+        apiVersions: ["*"]
+        resources: [projects]
+        operations: [DELETE]
+  validations:
+    - expression: "!has(oldObject.spec.deletionProtection) || !oldObject.spec.deletionProtection"
+      messageExpression: >-
+        'Project ' + oldObject.metadata.name + ' has deletionProtection enabled; deleting it deletes namespace '
+        + oldObject.metadata.name + ' and every database in it. Run `kubectl patch project '
+        + oldObject.metadata.name + ' --type merge -p {"spec":{"deletionProtection":false}}` first.'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform.cncp.nl-project-deletion-protection
+spec:
+  policyName: platform.cncp.nl-project-deletion-protection
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform.cncp.nl-project-namespace-protection
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        resources: [namespaces]
+        operations: [DELETE]
+  validations:
+    - expression: >-
+        request.userInfo.username in [
+          'system:serviceaccount:crossplane-system:crossplane',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
+        ]
+      messageExpression: >-
+        'namespace ' + oldObject.metadata.name + ' belongs to Project ' + oldObject.metadata.name
+        + '; delete the Project instead (kubectl delete project ' + oldObject.metadata.name + ')'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform.cncp.nl-project-namespace-protection
+spec:
+  policyName: platform.cncp.nl-project-namespace-protection
+  validationActions: [Deny]
+  matchResources:
+    # On DELETE the selector matches the existing object.
+    objectSelector:
+      matchExpressions:
+        - key: platform.cncp.nl/project
+          operator: Exists

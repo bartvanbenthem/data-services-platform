@@ -1,0 +1,12 @@
+# Observability switched off and no EnvironmentConfig: just the namespace.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: sandbox
+spec:
+  deletionProtection: false
+  observability:
+    prometheus:
+      enabled: false
+    grafana:
+      enabled: false

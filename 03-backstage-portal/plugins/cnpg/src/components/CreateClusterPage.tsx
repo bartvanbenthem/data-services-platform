@@ -1,10 +1,8 @@
 import { useApi, useRouteRef } from '@backstage/frontend-plugin-api';
+import { usePermission } from '@backstage/plugin-permission-react';
 import {
   Alert,
-  Button,
-  Card,
-  CardBody,
-  CardHeader,
+  ButtonLink,
   Container,
   Flex,
   Grid,
@@ -12,47 +10,17 @@ import {
   NumberField,
   Select,
   Switch,
-  Text,
   TextField,
 } from '@backstage/ui';
-import { ReactNode, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { cnpgProjectCreatePermission } from '@internal/backstage-plugin-cnpg-common';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import useAsync from 'react-use/esm/useAsync';
 import { stringify } from 'yaml';
 import { cnpgApiRef } from '../api';
-import { clusterRouteRef } from '../routes';
-import { ErrorAlert } from './common';
+import { clusterRouteRef, createProjectRouteRef } from '../routes';
+import { ManifestPanel, Section } from './common';
 import { ClusterForm, defaultForm, toManifest, toSpec, validate } from './form';
-
-const Section = ({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) => (
-  <Card>
-    <CardHeader>
-      <Flex direction="column" gap="1">
-        <Text variant="title-x-small" as="h3">
-          {title}
-        </Text>
-        {description && (
-          <Text variant="body-small" color="secondary">
-            {description}
-          </Text>
-        )}
-      </Flex>
-    </CardHeader>
-    <CardBody>
-      <Grid.Root columns={{ initial: '1', md: '2' }} gap="3">
-        {children}
-      </Grid.Root>
-    </CardBody>
-  </Card>
-);
 
 const opts = (values: Array<string | number>) => values.map(v => ({ id: String(v), label: String(v) }));
 
@@ -60,20 +28,34 @@ export const CreateClusterPage = () => {
   const api = useApi(cnpgApiRef);
   const navigate = useNavigate();
   const clusterLink = useRouteRef(clusterRouteRef);
+  const createProjectLink = useRouteRef(createProjectRouteRef);
+  const { allowed: canCreateProject } = usePermission({ permission: cnpgProjectCreatePermission });
+  const [params] = useSearchParams();
 
   const { value: config } = useAsync(() => api.getConfig(), [api]);
-  const { value: namespaces = [] } = useAsync(() => api.listNamespaces(), [api]);
+  // Clusters go into a Project namespace, which comes with its own
+  // Prometheus and Grafana; free-text namespaces are no longer offered.
+  const { value: projects, loading: projectsLoading } = useAsync(() => api.listProjects(), [api]);
 
-  const [form, setForm] = useState<ClusterForm>(defaultForm());
+  // ?project=<name> (from a project page) wins over the configured default.
+  const [form, setForm] = useState<ClusterForm>(defaultForm(params.get('project') ?? ''));
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState<'validate' | 'create'>();
   const [result, setResult] = useState<{ error?: Error; validated?: boolean }>({});
 
   useEffect(() => {
-    if (config?.defaultNamespace) {
-      setForm(f => (f.namespace ? f : { ...f, namespace: config.defaultNamespace! }));
+    const preferred = config?.defaultNamespace;
+    if (preferred && projects?.some(p => p.name === preferred)) {
+      setForm(f => (f.namespace ? f : { ...f, namespace: preferred }));
     }
-  }, [config]);
+  }, [config, projects]);
+
+  /** Selecting a project also suggests its owner, unless one was typed already. */
+  const selectProject = (name: string) => {
+    const project = projects?.find(p => p.name === name);
+    setForm(f => ({ ...f, namespace: name, owner: f.owner || project?.owner || '' }));
+    setResult({});
+  };
 
   const set = <K extends keyof ClusterForm>(key: K) => (value: ClusterForm[K]) => {
     setForm(f => ({ ...f, [key]: value }));
@@ -120,6 +102,20 @@ export const CreateClusterPage = () => {
         <Grid.Root columns={{ initial: '1', lg: '3' }} gap="4">
           <Grid.Item colSpan={{ initial: '1', lg: '2' }}>
             <Flex direction="column" gap="4">
+              {!projectsLoading && projects?.length === 0 && (
+                <Alert
+                  status="info"
+                  title="No projects yet"
+                  description="A cluster lives in a project, which comes with its own Prometheus and Grafana. Create a project first."
+                  customActions={
+                    canCreateProject && createProjectLink ? (
+                      <ButtonLink href={createProjectLink()} variant="secondary" size="small">
+                        Create project
+                      </ButtonLink>
+                    ) : undefined
+                  }
+                />
+              )}
               <Section title="Basics">
                 <TextField
                   label="Name"
@@ -130,13 +126,19 @@ export const CreateClusterPage = () => {
                   isInvalid={Boolean(err('name'))}
                 />
                 <Select
-                  label="Namespace"
+                  label="Project"
                   isRequired
                   searchable
                   value={form.namespace || null}
-                  onChange={k => set('namespace')(String(k ?? ''))}
-                  options={opts(namespaces)}
-                  description={err('namespace')}
+                  onChange={k => selectProject(String(k ?? ''))}
+                  options={(projects ?? []).map(p => ({
+                    id: p.name,
+                    label: p.ready ? p.name : `${p.name} (provisioning)`,
+                  }))}
+                  description={
+                    err('namespace') ??
+                    "Its metrics, alerts and dashboard go to the project's Prometheus and Grafana."
+                  }
                   isInvalid={Boolean(err('namespace'))}
                 />
                 <Select
@@ -314,7 +316,7 @@ export const CreateClusterPage = () => {
                       label="Credentials Secret"
                       value={form.backupSecretName}
                       onChange={set('backupSecretName')}
-                      description={err('backupSecretName') ?? 'Keys ACCESS_KEY_ID and ACCESS_SECRET_KEY, same namespace.'}
+                      description={err('backupSecretName') ?? 'Keys ACCESS_KEY_ID and ACCESS_SECRET_KEY, in the same project.'}
                       isInvalid={Boolean(err('backupSecretName'))}
                     />
                     <TextField
@@ -351,57 +353,15 @@ export const CreateClusterPage = () => {
           </Grid.Item>
 
           <Grid.Item>
-            <Flex direction="column" gap="3" style={{ position: 'sticky', top: 16 }}>
-              <Card>
-                <CardHeader>
-                  <Text variant="title-x-small" as="h3">
-                    Manifest
-                  </Text>
-                </CardHeader>
-                <CardBody>
-                  <pre
-                    style={{
-                      margin: 0,
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      overflow: 'auto',
-                      maxHeight: '55vh',
-                    }}
-                  >
-                    {manifest}
-                  </pre>
-                </CardBody>
-              </Card>
-              {touched && Object.keys(errors).length > 0 && (
-                <Alert status="warning" title="Fix the highlighted fields first" />
-              )}
-              {result.error && <ErrorAlert error={result.error} />}
-              {result.validated && (
-                <Alert
-                  status="success"
-                  title="Valid"
-                  description="The API server accepted this manifest (dry run)."
-                />
-              )}
-              <Flex gap="2" justify="end">
-                <Button
-                  variant="secondary"
-                  loading={submitting === 'validate'}
-                  isDisabled={Boolean(submitting)}
-                  onPress={() => submit(true)}
-                >
-                  Validate
-                </Button>
-                <Button
-                  variant="primary"
-                  loading={submitting === 'create'}
-                  isDisabled={Boolean(submitting)}
-                  onPress={() => submit(false)}
-                >
-                  Create cluster
-                </Button>
-              </Flex>
-            </Flex>
+            <ManifestPanel
+              manifest={manifest}
+              hasErrors={touched && Object.keys(errors).length > 0}
+              error={result.error}
+              validated={result.validated}
+              submitting={submitting}
+              onSubmit={submit}
+              createLabel="Create cluster"
+            />
           </Grid.Item>
         </Grid.Root>
       </Container>

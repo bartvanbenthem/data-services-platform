@@ -1,0 +1,6 @@
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: demo
+spec:
+  owner: team-demo

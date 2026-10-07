@@ -1,0 +1,8 @@
+# The "demo" namespace as a Project: Prometheus and Grafana come with it
+# (they used to be hand-written prometheus.yaml / grafana.yaml here).
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: demo
+spec:
+  description: Demo databases

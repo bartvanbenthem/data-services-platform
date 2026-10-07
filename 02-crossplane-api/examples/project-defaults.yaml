@@ -1,0 +1,30 @@
+# Cluster-wide settings for every Project (read by apis/project/composition.yaml).
+# All keys are optional; without this object Projects get no Grafana ingress
+# and expect kube-prometheus-stack in prometheus-operator-system.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: project-defaults
+data:
+  grafana:
+    ingress:
+      className: haproxy
+      # "{project}" is replaced by the Project name. nip.io resolves to the IP
+      # in the name: use your ingress controller's LoadBalancer IP
+      # (kubectl get svc -n haproxy-ingress), or a wildcard DNS name.
+      hostTemplate: grafana-{project}.203.0.113.10.nip.io
+      scheme: http
+      # tlsSecretName: wildcard-tls        # Secret in each project namespace
+  prometheus:
+    # kube-prometheus-stack's kubelet / kube-state-metrics / node-exporter
+    # ServiceMonitors, which the CNPG dashboard's CPU/memory panels need.
+    clusterMetrics:
+      enabled: true
+      namespace: prometheus-operator-system
+      serviceMonitorLabels:
+        release: prometheus-operator
+    # The CNPG operator's PodMonitor, for the dashboard's operator panels
+    # (ready operator pods, reconcile errors).
+    operatorMetrics:
+      enabled: true
+      namespace: cnpg-system

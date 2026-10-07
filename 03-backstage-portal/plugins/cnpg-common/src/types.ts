@@ -13,6 +13,15 @@ export const XR_KIND = 'PostgresCluster';
 /** Annotation on catalog Resource entities: "<namespace>/<name>" of their PostgresCluster. */
 export const CNPG_ANNOTATION = 'cnpg.cncp.nl/postgrescluster';
 
+/** platform.cncp.nl/v1alpha1 Project (cluster-scoped): one namespace with its own Prometheus + Grafana. */
+export const PROJECT_GROUP = 'platform.cncp.nl';
+export const PROJECT_VERSION = 'v1alpha1';
+export const PROJECT_PLURAL = 'projects';
+export const PROJECT_KIND = 'Project';
+
+/** Annotation on catalog project entities: the Project (= namespace) name. */
+export const PROJECT_ANNOTATION = 'platform.cncp.nl/project';
+
 export interface Condition {
   type: string;
   status: 'True' | 'False' | 'Unknown';
@@ -72,6 +81,10 @@ export interface PostgresClusterSummary {
   /** uid of the composed GrafanaDashboard; unset when the dashboard is disabled. */
   dashboardUid?: string;
   createdAt?: string;
+  /** The Project whose namespace the cluster lives in, if any (filled in by the backend). */
+  project?: string;
+  /** That project's Grafana (status.grafana.url); takes precedence over cnpg.grafanaUrl. */
+  grafanaUrl?: string;
 }
 
 export interface InstancePod {
@@ -128,6 +141,83 @@ export function summarize(cluster: PostgresCluster): PostgresClusterSummary {
     pooler: Boolean(spec.pooler?.enabled),
     backup: Boolean(spec.backup?.enabled),
     dashboardUid: status?.monitoring?.dashboardUid || undefined,
+    createdAt: metadata.creationTimestamp,
+  };
+}
+
+export interface ProjectStatus {
+  ready?: boolean;
+  message?: string;
+  namespace?: string;
+  prometheus?: { url?: string };
+  grafana?: {
+    url?: string;
+    internalUrl?: string;
+    adminSecret?: string;
+    instanceSelector?: Record<string, string>;
+  };
+  conditions?: Condition[];
+}
+
+export interface Project {
+  apiVersion: string;
+  kind: string;
+  metadata: {
+    name: string;
+    uid?: string;
+    creationTimestamp?: string;
+    deletionTimestamp?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+  spec: {
+    owner?: string;
+    description?: string;
+    deletionProtection?: boolean;
+    access?: Array<{ group: string; role: 'admin' | 'edit' | 'view' }>;
+    quota?: { cpu?: string; memory?: string; storage?: string };
+    observability?: {
+      prometheus?: { enabled?: boolean; retention?: string; storage?: { size?: string } };
+      grafana?: { enabled?: boolean; ingress?: boolean };
+    };
+    [key: string]: unknown;
+  };
+  status?: ProjectStatus;
+}
+
+/** One row in the portal's project list / project picker. */
+export interface ProjectSummary {
+  /** Also the namespace name. */
+  name: string;
+  owner?: string;
+  description?: string;
+  /** Crossplane's Ready condition: namespace, Prometheus and Grafana are up. */
+  ready: boolean;
+  synced: boolean;
+  deleting: boolean;
+  deletionProtection: boolean;
+  message?: string;
+  prometheus: boolean;
+  grafana: boolean;
+  grafanaUrl?: string;
+  createdAt?: string;
+}
+
+export function summarizeProject(project: Project): ProjectSummary {
+  const { metadata, spec, status } = project;
+  const condition = (type: string) => status?.conditions?.find(c => c.type === type);
+  return {
+    name: metadata.name,
+    owner: spec.owner || undefined,
+    description: spec.description || undefined,
+    ready: condition('Ready')?.status === 'True',
+    synced: condition('Synced')?.status === 'True',
+    deleting: Boolean(metadata.deletionTimestamp),
+    deletionProtection: spec.deletionProtection !== false,
+    message: status?.message,
+    prometheus: spec.observability?.prometheus?.enabled !== false,
+    grafana: spec.observability?.grafana?.enabled !== false,
+    grafanaUrl: status?.grafana?.url || undefined,
     createdAt: metadata.creationTimestamp,
   };
 }

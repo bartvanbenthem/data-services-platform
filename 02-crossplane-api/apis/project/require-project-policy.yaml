@@ -1,0 +1,43 @@
+# Optional: PostgresClusters may only be *created* in Project namespaces, so
+# every database gets the project's Prometheus/Grafana and a known owner.
+# Existing PostgresClusters elsewhere keep working (updates and deletes aren't
+# checked).
+#
+# Not installed by default: install with REQUIRE_PROJECT=true install/install.sh,
+# or kubectl apply this file. Namespaces labelled
+# platform.cncp.nl/allow-unmanaged-postgres=true are exempt (e.g. "backstage",
+# where the portal's own database lives).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform.cncp.nl-postgrescluster-requires-project
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [cnpg.cncp.nl]
+        apiVersions: ["*"]
+        resources: [postgresclusters]
+        operations: [CREATE]
+  validations:
+    - expression: >-
+        has(namespaceObject.metadata.labels) &&
+        'platform.cncp.nl/project' in namespaceObject.metadata.labels
+      messageExpression: >-
+        'namespace ' + namespaceObject.metadata.name + ' is not a Project; create PostgresClusters in a '
+        + 'Project namespace (kubectl get projects), or create a Project first'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform.cncp.nl-postgrescluster-requires-project
+spec:
+  policyName: platform.cncp.nl-postgrescluster-requires-project
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: platform.cncp.nl/allow-unmanaged-postgres
+          operator: NotIn
+          values: ["true"]

@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: namespace
+status:
+  phase: Active
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform:project:team-payments:prometheus
+  annotations:
+    crossplane.io/composition-resource-name: prometheus-clusterrolebinding
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: prometheus-serviceaccount
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: prometheus
+status:
+  availableReplicas: 1
+  conditions:
+  - type: Available
+    status: 'True'
+  - type: Reconciled
+    status: 'True'
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: Grafana
+metadata:
+  name: grafana
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: grafana
+status:
+  stage: complete
+  stageStatus: success
+  version: 12.2.1
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDatasource
+metadata:
+  name: prometheus
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: grafana-datasource
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: access-0
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: access-0
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: access-1
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: access-1
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quota
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: quota
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: limitrange
+  namespace: team-payments
+  annotations:
+    crossplane.io/composition-resource-name: limitrange

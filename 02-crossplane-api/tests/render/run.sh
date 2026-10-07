@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Offline tests for the PostgresCluster composition -- no Kubernetes cluster.
+# Offline tests for the compositions -- no Kubernetes cluster.
 #
-#  1. composition.yaml is up to date with composition.tmpl.yaml + src/.
+#  1. postgrescluster/composition.yaml is up to date with its template + src/.
 #  2. `crossplane render` (real function-go-templating image, XRD defaults
-#     applied via --xrd) for every xr/<case>.yaml, first with nothing
-#     observed, then with observed/<case>.yaml if present.
+#     applied via --xrd) for every <api>/xr/<case>.yaml, first with nothing
+#     observed, then with <api>/observed/<case>.yaml if present.
+#     <api>/required/<case>.yaml, if present, mocks the resources the
+#     composition requests (the project-defaults EnvironmentConfig).
 #  3. `crossplane resource validate` of every rendered object against the
 #     real CRD schemas: CNPG + Barman Cloud from ../../../01-operator/charts,
-#     Prometheus Operator + grafana-operator from ../crds.
-#  4. Semantic assertions (assert.py): readiness/status, embedded dashboard
-#     JSON parses with per-cluster uid/title, alert rules escaped correctly.
+#     Prometheus Operator + grafana-operator from ../crds. Core kinds
+#     (Namespace, RoleBinding, ...) have no CRD and are skipped.
+#  4. Semantic assertions (<api>/assert.py).
 #
 # Requires the crossplane CLI (v2), helm, python3 + PyYAML, and a Docker API
 # (rootless podman works: export DOCKER_HOST=unix:///run/user/$UID/podman/podman.sock).
@@ -18,9 +20,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_ROOT="$(cd "${HERE}/../.." && pwd)"
 OPERATOR_CHARTS="$(cd "${API_ROOT}/../01-operator/charts" && pwd)"
-XRD="${API_ROOT}/apis/postgrescluster/definition.yaml"
-COMPOSITION="${API_ROOT}/apis/postgrescluster/composition.yaml"
 FUNCTIONS="${API_ROOT}/install/functions.yaml"
+APIS=(postgrescluster project)
 
 if [[ -z "${DOCKER_HOST:-}" && -S "/run/user/${UID}/podman/podman.sock" ]]; then
   export DOCKER_HOST="unix:///run/user/${UID}/podman/podman.sock"
@@ -36,7 +37,9 @@ echo "=== collecting CRD schemas"
 SCHEMAS="${OUT}/schemas"
 mkdir -p "${SCHEMAS}"
 cp "${HERE}/../crds/"*.yaml "${SCHEMAS}/"
-cp "${XRD}" "${SCHEMAS}/xrd.yaml"
+for api in "${APIS[@]}"; do
+  cp "${API_ROOT}/apis/${api}/definition.yaml" "${SCHEMAS}/xrd-${api}.yaml"
+done
 helm template cnpg "${OPERATOR_CHARTS}/cloudnative-pg" --show-only templates/crds/crds.yaml > "${SCHEMAS}/cnpg-crds.yaml"
 helm template barman "${OPERATOR_CHARTS}/plugin-barman-cloud" > "${OUT}/barman-all.yaml"
 python3 -I - "${OUT}/barman-all.yaml" "${SCHEMAS}/barman-crds.yaml" <<'EOF'
@@ -46,34 +49,46 @@ yaml.safe_dump_all(docs, open(sys.argv[2], "w"))
 EOF
 
 fail=0
-for xr in "${HERE}"/xr/*.yaml; do
-  case="$(basename "${xr}" .yaml)"
-  for state in empty observed; do
-    args=()
-    if [[ "${state}" == "observed" ]]; then
-      [[ -f "${HERE}/observed/${case}.yaml" ]] || continue
-      args=(--observed-resources="${HERE}/observed/${case}.yaml")
+for api in "${APIS[@]}"; do
+  xrd="${API_ROOT}/apis/${api}/definition.yaml"
+  composition="${API_ROOT}/apis/${api}/composition.yaml"
+  dir="${HERE}/${api}"
+  for xr in "${dir}"/xr/*.yaml; do
+    case="$(basename "${xr}" .yaml)"
+    required=()
+    if [[ -f "${dir}/required/${case}.yaml" ]]; then
+      required=(--required-resources="${dir}/required/${case}.yaml")
     fi
-    out="${OUT}/${case}-${state}.yaml"
-    echo "=== ${case} (${state}): render"
-    if ! crossplane render "${xr}" "${COMPOSITION}" "${FUNCTIONS}" --xrd "${XRD}" \
-        --include-full-xr --include-function-results "${args[@]}" >"${out}" 2>"${out}.err"; then
-      echo "FAIL: render errored"; cat "${out}.err"; fail=1; continue
-    fi
+    for state in empty observed; do
+      args=()
+      if [[ "${state}" == "observed" ]]; then
+        [[ -f "${dir}/observed/${case}.yaml" ]] || continue
+        args=(--observed-resources="${dir}/observed/${case}.yaml")
+      fi
+      out="${OUT}/${api}-${case}-${state}.yaml"
+      echo "=== ${api}/${case} (${state}): render"
+      if ! crossplane render "${xr}" "${composition}" "${FUNCTIONS}" --xrd "${xrd}" \
+          --include-full-xr --include-function-results "${args[@]}" "${required[@]}" >"${out}" 2>"${out}.err"; then
+        echo "FAIL: render errored"; cat "${out}.err"; fail=1; continue
+      fi
 
-    echo "=== ${case} (${state}): validate against CRD schemas"
-    # Function Result documents are render output only, not API objects.
-    python3 -I - "${out}" "${out}.objects" <<'EOF'
+      echo "=== ${api}/${case} (${state}): validate against CRD schemas"
+      # Function Result documents are render output only, and core kinds have
+      # no CRD to validate against.
+      python3 -I - "${out}" "${out}.objects" <<'EOF'
 import sys, yaml
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") != "Result"]
+CORE = {"v1", "rbac.authorization.k8s.io/v1"}
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1]))
+        if d and d.get("kind") != "Result" and d.get("apiVersion") not in CORE]
 yaml.safe_dump_all(docs, open(sys.argv[2], "w"))
 EOF
-    if ! crossplane resource validate "${SCHEMAS}" "${out}.objects" --skip-success-results >"${out}.validate" 2>&1; then
-      echo "FAIL: schema validation"; cat "${out}.validate"; fail=1
-    fi
+      if ! crossplane resource validate "${SCHEMAS}" "${out}.objects" --skip-success-results >"${out}.validate" 2>&1; then
+        echo "FAIL: schema validation"; cat "${out}.validate"; fail=1
+      fi
 
-    echo "=== ${case} (${state}): assertions"
-    python3 -I "${HERE}/assert.py" "${case}" "${state}" "${out}" "${API_ROOT}/src/dashboards/cnpg-cluster.json" || fail=1
+      echo "=== ${api}/${case} (${state}): assertions"
+      python3 -I "${dir}/assert.py" "${case}" "${state}" "${out}" "${API_ROOT}/src/dashboards/cnpg-cluster.json" || fail=1
+    done
   done
 done
 

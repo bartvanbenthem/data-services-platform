@@ -25,9 +25,26 @@ export const cnpgClusterDeletePermission = createPermission({
   attributes: { action: 'delete' },
 });
 
+/** List Projects (also what the create-cluster form needs to offer namespaces). */
+export const cnpgProjectReadPermission = createPermission({
+  name: 'cnpg.project.read',
+  attributes: { action: 'read' },
+});
+
+/**
+ * Create a Project: a namespace with its own Prometheus and Grafana. Usually
+ * reserved for platform admins or team leads.
+ */
+export const cnpgProjectCreatePermission = createPermission({
+  name: 'cnpg.project.create',
+  attributes: { action: 'create' },
+});
+
 export const cnpgPermissions = [
   cnpgClusterReadPermission,
   cnpgClusterCreatePermission,
   cnpgClusterUpdatePermission,
   cnpgClusterDeletePermission,
+  cnpgProjectReadPermission,
+  cnpgProjectCreatePermission,
 ];

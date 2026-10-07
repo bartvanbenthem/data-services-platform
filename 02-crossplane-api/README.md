@@ -1,7 +1,12 @@
-# 02-crossplane-api: the `PostgresCluster` API
+# 02-crossplane-api: the `PostgresCluster` and `Project` APIs
 
-A Crossplane **v2** namespaced composite resource, `cnpg.cncp.nl/v1alpha1 PostgresCluster`.
-It turns ~10 lines of YAML into a production CloudNativePG setup.
+Two Crossplane **v2** composite resources:
+
+- `cnpg.cncp.nl/v1alpha1 PostgresCluster` (namespaced) turns ~10 lines of YAML into a production
+  CloudNativePG setup.
+- `platform.cncp.nl/v1alpha1 Project` (cluster-scoped) is a namespace pre-staged with its own
+  Prometheus and Grafana, so every PostgresCluster created in it gets metrics, alerts and a dashboard
+  without further setup. See [The Project API](#the-project-api).
 
 ```yaml
 apiVersion: cnpg.cncp.nl/v1alpha1
@@ -48,6 +53,64 @@ uid. A `PostgresReady` condition sits next to Crossplane's own `Ready`/`Synced`.
 - The dashboard JSON and alert rules are kept as readable sources in `src/` and embedded by a
   generator. `composition.yaml` is generated, so don't edit it by hand.
 
+## The Project API
+
+```yaml
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: team-payments        # = the namespace
+spec:
+  owner: team-payments       # Backstage group
+```
+
+See [`examples/project.yaml`](examples/project.yaml) for access, quota and observability settings, and
+[`apis/project/definition.yaml`](apis/project/definition.yaml) for the schema.
+
+| Composed resource | When | Notes |
+|---|---|---|
+| `Namespace <name>` | always | Labels `platform.cncp.nl/project` and `dashboards.paas.cncp.nl/scope` = `<name>` (the latter is what every PostgresCluster's `GrafanaDashboard` selects by default), `backstage.io/owner`, Pod Security `baseline` |
+| `ServiceAccount` + `Prometheus` + `ClusterRoleBinding platform:project:<name>:prometheus` | `observability.prometheus.enabled` (default) | Scrapes every `PodMonitor`/`PrometheusRule` in the namespace plus kube-prometheus-stack's node/container ServiceMonitors. The binding points at one shared ClusterRole, `cnpg-platform:project-prometheus` |
+| `Grafana` + `GrafanaDatasource prometheus` | `observability.grafana.enabled` (default) | Anonymous Viewer, embedding allowed (for the portal), ingress from the EnvironmentConfig. The URL ends up in `status.grafana.url` |
+| `RoleBinding` per `access[]` entry | `access` | Binds a Kubernetes group to the built-in `admin`/`edit`/`view` role |
+| `ResourceQuota` + `LimitRange` | `quota` | The LimitRange gives default requests so operator-generated pods pass the quota |
+
+Namespaced objects are only rendered once the Namespace is observed, so the first reconcile doesn't
+fail. The XR is `Ready` when the namespace is Active, Prometheus is `Available` and Grafana reports
+`complete/success`. `ObservabilityReady` carries the message.
+
+**Cluster-wide settings** (the Grafana ingress host, where kube-prometheus-stack runs) come from the
+`EnvironmentConfig` named `project-defaults`, requested through function-go-templating's
+`ExtraResources`, so no second function is needed. Every key is optional; see
+[`examples/project-defaults.yaml`](examples/project-defaults.yaml).
+
+**Names**: the Project name is the namespace name. The XRD's CEL rules allow DNS labels up to 40
+characters, without `--` (the portal names catalog entities `<namespace>--<cluster>`), and not `kube-*`,
+`default`, `projects` or other system namespaces.
+
+### Guardrails ([`apis/project/policies.yaml`](apis/project/policies.yaml))
+
+Deleting a Project deletes its namespace, and with it every PostgresCluster and its volumes. Two
+ValidatingAdmissionPolicies (Kubernetes 1.30+) make that explicit:
+
+- A Project with `spec.deletionProtection: true` (the default) can't be deleted. Set it to `false` first.
+- A project namespace (label `platform.cncp.nl/project`) can only be deleted by Crossplane or the
+  garbage collector, so `kubectl delete ns` doesn't bypass the first rule.
+
+Optional, with `REQUIRE_PROJECT=true install/install.sh`
+([`require-project-policy.yaml`](apis/project/require-project-policy.yaml)): new PostgresClusters only
+in Project namespaces. Namespaces labelled `platform.cncp.nl/allow-unmanaged-postgres=true` are
+exempt (`03-backstage-portal/deploy` sets it on `backstage`, where the portal's own database lives).
+
+### RBAC
+
+Crossplane gets exactly what the Project composition needs ([`install/rbac.yaml`](install/rbac.yaml)):
+namespaces, ServiceAccounts, quotas, (Cluster)RoleBindings, Prometheuses, Grafanas and
+GrafanaDatasources. To create bindings without holding the bound permissions itself, it gets `bind`
+on just four ClusterRoles: `admin`, `edit`, `view` and `cnpg-platform:project-prometheus`. Projects are
+cluster-scoped, so the namespace roles don't cover creating them: bind
+`cnpg-platform:projects:admin` to whoever may create projects.
+
 ## Layout
 
 ```
@@ -56,10 +119,14 @@ apis/postgrescluster/composition.tmpl.yaml composition source -- edit this
 apis/postgrescluster/composition.yaml      GENERATED (make generate)
 src/dashboards/cnpg-cluster.json           CNPG Grafana dashboard (Apache-2.0)
 src/alerts/cnpg-cluster-rules.yaml         CNPG alerts from the cnpg/cluster chart (hack/refresh-alerts.sh)
+apis/project/definition.yaml               Project XRD (cluster-scoped)
+apis/project/composition.yaml              Project composition (hand-written, nothing embedded)
+apis/project/policies.yaml                 deletion protection (always installed)
+apis/project/require-project-policy.yaml   optional: PostgresClusters only in Projects
 hack/generate.py                           embeds src/ into the composition (escapes {{ }})
 install/                                   Crossplane, function-go-templating, RBAC, install/uninstall
-examples/                                  minimal and production PostgresClusters
-tests/render/                              offline render + schema validation tests
+examples/                                  PostgresClusters, a Project, the project-defaults EnvironmentConfig
+tests/render/<api>/                        offline render + schema validation tests per API
 ```
 
 ## Install
@@ -67,8 +134,10 @@ tests/render/                              offline render + schema validation te
 ```sh
 install/install.sh                        # Crossplane 2.4.2 + everything above
 SKIP_CROSSPLANE=true install/install.sh   # Crossplane already installed
+kubectl apply -f examples/project-defaults.yaml   # edit the Grafana host first
+kubectl apply -f examples/project.yaml
 kubectl apply -f examples/minimal.yaml
-kubectl get postgrescluster -A
+kubectl get project,postgrescluster -A
 ```
 
 The Composition is applied with `--server-side`, because the embedded dashboard exceeds the
@@ -93,8 +162,9 @@ The `uri`/`jdbc-uri` keys in the `<name>-app` Secret point at the in-cluster hos
 
 ```sh
 make generate   # after editing composition.tmpl.yaml or src/
-make test       # crossplane render (3 cases × empty/observed), crossplane resource validate
-                # against the CNPG/Barman/Prometheus/Grafana CRDs, semantic assertions
+make test       # crossplane render for both APIs (PostgresCluster: 3 cases, Project: 3 cases, each
+                # empty and observed; the Project cases mock the EnvironmentConfig), crossplane
+                # resource validate against the CNPG/Barman/Prometheus/Grafana CRDs, assertions
 ../hack/e2e-kind.sh   # the real thing on kind
 ```
 

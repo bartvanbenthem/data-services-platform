@@ -1,0 +1,18 @@
+# Cluster-wide Project settings for this cluster (see
+# ../../02-crossplane-api/examples/project-defaults.yaml for every key).
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: project-defaults
+data:
+  grafana:
+    ingress:
+      className: haproxy
+      # nip.io resolves to the IP in the name: the HAProxy LoadBalancer IP
+      # (kubectl get svc -n haproxy-ingress). Change it for another cluster.
+      hostTemplate: grafana-{project}.188.34.124.213.nip.io
+  prometheus:
+    clusterMetrics:
+      namespace: prometheus-operator-system
+      serviceMonitorLabels:
+        release: prometheus-operator

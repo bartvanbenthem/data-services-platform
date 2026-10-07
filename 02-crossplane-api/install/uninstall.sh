@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Removes the PostgresCluster API. Refuses while PostgresClusters exist,
-# because deleting the XRD would cascade-delete every database it manages.
+# Removes the PostgresCluster and Project APIs. Refuses while PostgresClusters
+# or Projects exist, because deleting an XRD cascade-deletes every object of
+# that kind (and a Project takes its namespace with it).
 # Crossplane core stays installed unless UNINSTALL_CROSSPLANE=true.
 set -euo pipefail
 
@@ -17,6 +18,19 @@ if kubectl get crd postgresclusters.cnpg.cncp.nl >/dev/null 2>&1; then
   fi
 fi
 
+if kubectl get crd projects.platform.cncp.nl >/dev/null 2>&1; then
+  remaining="$(kubectl get projects.platform.cncp.nl --no-headers 2>/dev/null | wc -l)"
+  if [[ "${remaining}" -gt 0 ]]; then
+    echo "ERROR: ${remaining} Project(s) still exist; delete them first:" >&2
+    kubectl get projects.platform.cncp.nl >&2
+    exit 1
+  fi
+fi
+
+kubectl delete -f "${API_DIR}/project/require-project-policy.yaml" --ignore-not-found
+kubectl delete -f "${API_DIR}/project/policies.yaml" --ignore-not-found
+kubectl delete -f "${API_DIR}/project/composition.yaml" --ignore-not-found
+kubectl delete -f "${API_DIR}/project/definition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/postgrescluster/composition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/postgrescluster/definition.yaml" --ignore-not-found
 kubectl delete -f "${SCRIPT_DIR}/functions.yaml" --ignore-not-found

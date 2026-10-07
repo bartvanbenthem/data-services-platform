@@ -23,6 +23,52 @@ rules:
     resources: [grafanadashboards]
     verbs: [get, list, watch, create, update, patch, delete]
 ---
+# What the Project composition (apis/project) composes. Creating
+# (Cluster)RoleBindings is limited by Kubernetes' escalation check, so
+# instead of holding every permission of the roles it hands out, Crossplane
+# gets "bind" on exactly those four ClusterRoles.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane:composed:cnpg-platform-projects
+  labels:
+    rbac.crossplane.io/aggregate-to-crossplane: "true"
+rules:
+  - apiGroups: [""]
+    resources: [namespaces, serviceaccounts, resourcequotas, limitranges]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings, clusterrolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    resourceNames: [admin, edit, view, "cnpg-platform:project-prometheus"]
+    verbs: [bind]
+  - apiGroups: [monitoring.coreos.com]
+    resources: [prometheuses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [grafana.integreatly.org]
+    resources: [grafanas, grafanadatasources]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+# Bound to each Project's Prometheus ServiceAccount (one ClusterRoleBinding
+# per Project). Cluster-wide because the kubelet/cAdvisor targets live on the
+# nodes and kube-state-metrics/node-exporter in kube-prometheus-stack's
+# namespace; the namespace's own PodMonitor targets are covered too.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:project-prometheus
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/metrics, nodes/proxy, services, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - nonResourceURLs: [/metrics, /metrics/cadvisor]
+    verbs: [get]
+---
 # Lets namespace users manage PostgresClusters through the built-in
 # admin/edit/view roles (e.g. a team's RoleBinding to "edit").
 apiVersion: rbac.authorization.k8s.io/v1
@@ -47,3 +93,26 @@ rules:
   - apiGroups: [cnpg.cncp.nl]
     resources: [postgresclusters]
     verbs: [get, list, watch]
+---
+# Projects are cluster-scoped, so the namespace roles don't apply: reading
+# them is harmless, creating one (a namespace + Prometheus + Grafana) is a
+# platform decision. Bind this to whoever may create projects.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:projects:view
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: [platform.cncp.nl]
+    resources: [projects]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:projects:admin
+rules:
+  - apiGroups: [platform.cncp.nl]
+    resources: [projects]
+    verbs: [get, list, watch, create, update, patch, delete]

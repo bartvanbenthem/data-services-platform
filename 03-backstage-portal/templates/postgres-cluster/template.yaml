@@ -14,7 +14,7 @@ spec:
 
   parameters:
     - title: Cluster
-      required: [name, namespace, owner]
+      required: [name, project, owner]
       properties:
         name:
           title: Name
@@ -22,11 +22,19 @@ spec:
           description: Lowercase letters, digits and "-", max 40 characters.
           pattern: '^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$'
           ui:autofocus: true
-        namespace:
-          title: Namespace
+        project:
+          title: Project
           type: string
-          description: Kubernetes namespace the cluster lives in (must exist).
-          pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+          description: >-
+            The project the cluster lives in; its Prometheus and Grafana pick up
+            the cluster's metrics, alerts and dashboard. Create one with the Project template.
+          ui:field: EntityPicker
+          ui:options:
+            allowArbitraryValues: false
+            defaultKind: Resource
+            catalogFilter:
+              kind: Resource
+              spec.type: project
         owner:
           title: Owner
           type: string
@@ -113,7 +121,7 @@ spec:
                 backupSecretName:
                   title: Credentials Secret
                   type: string
-                  description: Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY in the same namespace.
+                  description: Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY in the project.
 
   steps:
     - id: create
@@ -121,7 +129,9 @@ spec:
       action: cnpg:postgrescluster:create
       input:
         name: ${{ parameters.name }}
-        namespace: ${{ parameters.namespace }}
+        # A project entity ref (resource:default/<project>); the action uses
+        # the project name as the namespace.
+        namespace: ${{ parameters.project }}
         owner: ${{ parameters.owner }}
         system: ${{ parameters.system }}
         spec:
@@ -164,6 +174,6 @@ spec:
       - title: Connecting
         content: |
           Applications in the cluster connect to
-          `${{ parameters.name }}-rw.${{ parameters.namespace }}.svc:5432`
-          with the credentials in Secret `${{ parameters.namespace }}/${{ parameters.name }}-app`
+          `${{ parameters.name }}-rw.${{ steps['create'].output.namespace }}.svc:5432`
+          with the credentials in Secret `${{ steps['create'].output.namespace }}/${{ parameters.name }}-app`
           (key `uri` holds a full connection string).

@@ -76,7 +76,7 @@ const PG_IDENT = /^[a-z_][a-z0-9_]*$/;
 export function validate(f: ClusterForm): Partial<Record<keyof ClusterForm, string>> {
   const e: Partial<Record<keyof ClusterForm, string>> = {};
   if (!NAME.test(f.name)) e.name = 'Lowercase letters, digits and "-", starting with a letter, max 40 characters.';
-  if (!f.namespace) e.namespace = 'Pick a namespace.';
+  if (!f.namespace) e.namespace = 'Pick a project.';
   if (f.owner && !/^[A-Za-z0-9][-A-Za-z0-9_.]{0,62}$/.test(f.owner)) e.owner = 'A group name, e.g. team-payments.';
   if (!QUANTITY.test(f.storageSize)) e.storageSize = 'e.g. 20Gi';
   if (f.walEnabled && !QUANTITY.test(f.walSize)) e.walSize = 'e.g. 5Gi';

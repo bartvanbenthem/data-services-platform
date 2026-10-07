@@ -106,7 +106,7 @@ export const DashboardsPage = () => {
             <Grid.Item colSpan={{ initial: '1', md: '9' }}>
               <Flex direction="column" gap="2">
                 <GrafanaDashboard
-                  grafanaUrl={config?.grafanaUrl}
+                  grafanaUrl={selected.grafanaUrl ?? config?.grafanaUrl}
                   namespace={selected.namespace}
                   name={selected.name}
                   uid={selected.dashboardUid}

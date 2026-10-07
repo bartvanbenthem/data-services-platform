@@ -2,14 +2,14 @@
 
 Everything the platform needs in the cluster before
 [`01-operator/`](../01-operator/) and
-[`02-crossplane-api/`](../02-crossplane-api/) are installed, plus a
-Prometheus and Grafana in the `demo` namespace.
+[`02-crossplane-api/`](../02-crossplane-api/) are installed, plus the
+`demo` Project (a namespace with its own Prometheus and Grafana).
 
 | Component | Needed for | Required |
 |---|---|---|
 | cert-manager | barman-cloud backup plugin | yes, unless `INSTALL_BARMAN=false` |
-| Prometheus Operator | `PodMonitor` / `PrometheusRule` per PostgresCluster | for monitoring |
-| grafana-operator | `GrafanaDashboard` per PostgresCluster | for dashboards |
+| Prometheus Operator | `PodMonitor` / `PrometheusRule` per PostgresCluster, `Prometheus` per Project | for monitoring |
+| grafana-operator | `GrafanaDashboard` per PostgresCluster, `Grafana` per Project | for dashboards |
 | HAProxy Ingress | reaching Grafana from outside the cluster | optional |
 
 Install them in the order below.
@@ -26,7 +26,8 @@ kubectl -n cert-manager rollout status deploy/cert-manager-webhook
 `kube-prometheus-stack` is the community chart for the operator. The flags
 turn off its own Prometheus, Alertmanager and Grafana. They keep
 kube-state-metrics and node-exporter, which the CNPG dashboard's
-CPU/memory panels need.
+CPU/memory panels need. The allowlist exports the nodes' zone label for the
+dashboard's zone panel.
 
 ```sh
 helm upgrade -i prometheus-operator kube-prometheus-stack \
@@ -34,7 +35,8 @@ helm upgrade -i prometheus-operator kube-prometheus-stack \
   --version 89.2.0 -n prometheus-operator-system --create-namespace \
   --set prometheus.enabled=false \
   --set alertmanager.enabled=false \
-  --set grafana.enabled=false
+  --set grafana.enabled=false \
+  --set 'kube-state-metrics.metricLabelsAllowlist[0]=nodes=[topology.kubernetes.io/zone]'
 ```
 
 Verify:
@@ -87,47 +89,66 @@ MetalLB isn't needed.
 kubectl get svc -n haproxy-ingress   # EXTERNAL-IP is where ingress hosts must resolve to
 ```
 
-## 5. Prometheus and Grafana in `demo`
+## 5. The `demo` Project (after 02-crossplane-api)
 
-[`demo/prometheus.yaml`](demo/prometheus.yaml) sets up Prometheus in `demo`:
-- It scrapes every `PodMonitor` and `PrometheusRule` in `demo`, which a
-  PostgresCluster creates.
-- It also scrapes the kubelet/cAdvisor, kube-state-metrics and node-exporter
-  `ServiceMonitor`s from step 2.
-- It comes with a `ClusterRole` that lets it reach those cluster-wide targets.
+A namespace with its own Prometheus and Grafana is a **Project**
+(`platform.cncp.nl/v1alpha1`, see
+[`02-crossplane-api`](../02-crossplane-api/README.md#the-project-api)), so
+this step runs *after* `01-operator/install.sh` and
+`02-crossplane-api/install/install.sh`.
 
-[`demo/grafana.yaml`](demo/grafana.yaml) sets up Grafana in `demo`:
-- It has a `prometheus` datasource and anonymous Viewer access.
-- `allow_embedding` is on, so the Backstage portal can show the dashboards
-  in an iframe.
-- It carries the label `dashboards.paas.cncp.nl/scope=demo`, which matches
-  the default `instanceSelector` on each PostgresCluster's
-  `GrafanaDashboard`.
+- [`demo/project-defaults.yaml`](demo/project-defaults.yaml): the
+  cluster-wide `EnvironmentConfig` every Project reads. It sets the Grafana
+  ingress host (`grafana-<project>.<haproxy-ip>.nip.io`) and where
+  kube-prometheus-stack's ServiceMonitors live (step 2). Edit the IP for a
+  different cluster.
+- [`demo/project.yaml`](demo/project.yaml): the `demo` Project. Crossplane
+  creates the namespace, a Prometheus that scrapes every `PodMonitor` and
+  `PrometheusRule` in it (plus the kubelet / kube-state-metrics /
+  node-exporter targets from step 2), and a Grafana with a `prometheus`
+  datasource, anonymous Viewer access and embedding allowed. The Grafana
+  carries `dashboards.paas.cncp.nl/scope=demo`, which every PostgresCluster's
+  `GrafanaDashboard` in `demo` selects.
 
 ```sh
-kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f demo/
+kubectl apply -f demo/project-defaults.yaml
+kubectl apply -f demo/project.yaml
+kubectl wait project/demo --for=condition=Ready --timeout=10m
 ```
-
-Grafana's ingress host is set to `grafana-demo.<haproxy-ip>.nip.io`. Edit it
-in `demo/grafana.yaml` for a different cluster, or remove `spec.ingress` and
-use a port-forward instead.
 
 Verify:
 
 ```sh
+kubectl get project demo                # GRAFANA column: the ingress URL
 kubectl -n demo get prometheus,grafana,grafanadatasource,grafanadashboard
 kubectl -n demo port-forward svc/prometheus-operated 9090   # Status > Targets: CNPG pods, kubelet, kube-state-metrics up
 kubectl -n demo get secret grafana-admin-credentials -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 -d; echo
 ```
 
-To embed the dashboards in the portal, point it at this Grafana.
-`{namespace}` is replaced with each cluster's namespace:
+More projects are one object each (`kubectl apply` a Project, or use
+**New project** in the portal). The portal takes each cluster's Grafana from
+its Project's `status.grafana.url`, so `CNPG_GRAFANA_URL` is only a fallback
+for clusters outside a Project.
+
+### Migrating a `demo` namespace set up with the old manifests
+
+Before this change, `demo/prometheus.yaml` and `demo/grafana.yaml` created
+the same objects by hand. The Project composes objects with the same names
+(`Prometheus prometheus`, `Grafana grafana`, `GrafanaDatasource prometheus`,
+`ServiceAccount prometheus`), so try it on a non-production cluster first and
+check that Crossplane took them over
+(`kubectl -n demo get prometheus prometheus -o jsonpath='{.metadata.ownerReferences}'`
+should name `Project demo`). Then remove the old cluster-wide RBAC, which the
+Project replaces with `ClusterRoleBinding platform:project:demo:prometheus`:
 
 ```sh
-export CNPG_GRAFANA_URL='http://grafana-{namespace}.188.34.124.213.nip.io'
+kubectl delete clusterrolebinding demo-prometheus
+kubectl delete clusterrole demo-prometheus
 ```
 
-For another namespace, copy both files and replace every `demo`. The
-`ClusterRole` and `ClusterRoleBinding` names are cluster-scoped, so rename
-those too.
+The old Grafana also answered on `grafana.paas.cncp.nl`. A Project has one
+host from `hostTemplate`, so add that DNS name elsewhere if you still need it.
+
+> The `demo` namespace now belongs to the Project. Deletion protection is on
+> by default: `kubectl delete namespace demo` and `kubectl delete project demo`
+> are refused until you set `spec.deletionProtection: false`.

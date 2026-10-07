@@ -22,14 +22,25 @@ import {
 import {
   CNPG_ANNOTATION,
   PostgresCluster,
+  Project,
+  PROJECT_ANNOTATION,
+  ProjectSummary,
   summarize,
+  summarizeProject,
 } from '@internal/backstage-plugin-cnpg-common';
 
 /**
- * Mirrors every PostgresCluster into the catalog as a Resource of type
- * "postgres-cluster" so databases are searchable, ownable and can be
- * attached to Systems/Components with dependsOn. Owner and system come from
- * the backstage.io/owner and backstage.io/system labels on the XR.
+ * Mirrors every Project and PostgresCluster into the catalog:
+ *
+ * - a Project becomes a Resource of type "project" named after the project
+ *   (= namespace), owned by spec.owner. The create-cluster template picks
+ *   one of these instead of a free-text namespace.
+ * - a PostgresCluster becomes a Resource of type "postgres-cluster" named
+ *   "<namespace>--<name>", owner/system from the backstage.io/owner and
+ *   backstage.io/system labels on the XR, and dependsOn its project.
+ *
+ * Project names can't contain "--" (enforced by the XRD), so the two never
+ * collide.
  */
 export class PostgresClusterEntityProvider implements EntityProvider {
   #connection?: EntityProviderConnection;
@@ -55,18 +66,58 @@ export class PostgresClusterEntityProvider implements EntityProvider {
 
   async refresh() {
     if (!this.#connection) return;
-    const clusters = await this.k8s.list();
+    const [clusters, projects] = await Promise.all([this.k8s.list(), this.k8s.listProjects()]);
+    const byName = new Map(projects.map(p => [p.metadata.name, summarizeProject(p)]));
+    const entities = [
+      ...projects.map(p => this.toProjectEntity(p)),
+      ...clusters.map(c => this.toEntity(c, byName.get(c.metadata.namespace))),
+    ];
     await this.#connection.applyMutation({
       type: 'full',
-      entities: clusters.map(c => ({
-        entity: this.toEntity(c),
-        locationKey: this.getProviderName(),
-      })),
+      entities: entities.map(entity => ({ entity, locationKey: this.getProviderName() })),
     });
-    this.logger.debug(`Synced ${clusters.length} PostgresClusters into the catalog`);
+    this.logger.debug(
+      `Synced ${projects.length} Projects and ${clusters.length} PostgresClusters into the catalog`,
+    );
   }
 
-  toEntity(cluster: PostgresCluster): Entity {
+  toProjectEntity(project: Project): Entity {
+    const s = summarizeProject(project);
+    const location = `cnpg:project/${s.name}`;
+    const links = [
+      {
+        url: `${this.options.appBaseUrl.replace(/\/$/, '')}/cnpg/projects/${s.name}`,
+        title: 'CNPG portal',
+      },
+    ];
+    if (s.grafanaUrl) {
+      links.push({ url: s.grafanaUrl, title: 'Grafana' });
+    }
+    return {
+      apiVersion: 'backstage.io/v1alpha1',
+      kind: 'Resource',
+      metadata: {
+        name: s.name,
+        title: s.name,
+        description: s.description ?? `Project ${s.name} with its own Prometheus and Grafana`,
+        annotations: {
+          [ANNOTATION_LOCATION]: location,
+          [ANNOTATION_ORIGIN_LOCATION]: location,
+          [PROJECT_ANNOTATION]: s.name,
+          'backstage.io/kubernetes-namespace': s.name,
+        },
+        tags: ['project'],
+        links,
+      },
+      spec: {
+        type: 'project',
+        owner: s.owner ?? this.options.defaultOwner,
+      },
+    };
+  }
+
+  /** `project`: the Project whose namespace the cluster is in, if any. */
+  toEntity(cluster: PostgresCluster, project?: ProjectSummary): Entity {
     const { name, namespace, labels = {} } = cluster.metadata;
     const s = summarize(cluster);
     const location = `cnpg:${namespace}/${name}`;
@@ -78,9 +129,13 @@ export class PostgresClusterEntityProvider implements EntityProvider {
         title: 'CNPG portal',
       },
     ];
-    if (dashboardUid && this.options.grafanaUrl) {
+    // The project's own Grafana, else the configured one ("{namespace}" for
+    // one Grafana per namespace).
+    const grafanaUrl =
+      project?.grafanaUrl ?? this.options.grafanaUrl?.replace(/\{namespace\}/g, namespace);
+    if (dashboardUid && grafanaUrl) {
       links.push({
-        url: `${this.options.grafanaUrl.replace(/\/$/, '')}/d/${dashboardUid}`,
+        url: `${grafanaUrl.replace(/\/$/, '')}/d/${dashboardUid}`,
         title: 'Grafana dashboard',
       });
     }
@@ -107,6 +162,7 @@ export class PostgresClusterEntityProvider implements EntityProvider {
         type: 'postgres-cluster',
         owner: labels['backstage.io/owner'] ?? this.options.defaultOwner,
         ...(labels['backstage.io/system'] ? { system: labels['backstage.io/system'] } : {}),
+        ...(project ? { dependsOn: [`resource:default/${project.name}`] } : {}),
       },
     };
   }

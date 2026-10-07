@@ -68,7 +68,7 @@ export const ClusterListPage = () => {
         />
       ),
     },
-    { id: 'namespace', label: 'Namespace', cell: c => <CellText title={c.namespace} /> },
+    { id: 'namespace', label: 'Project', cell: c => <CellText title={c.namespace} /> },
     {
       id: 'status',
       label: 'Status',
@@ -105,7 +105,7 @@ export const ClusterListPage = () => {
     const all = value ?? [];
     const count = (h: string) => all.filter(c => health(c) === h).length;
     return [
-      { label: 'Clusters', value: all.length, hint: `${namespaces.length} namespace${namespaces.length === 1 ? '' : 's'}` },
+      { label: 'Clusters', value: all.length, hint: `${namespaces.length} project${namespaces.length === 1 ? '' : 's'}` },
       { label: 'Healthy', value: count('healthy'), hint: 'Ready in Crossplane and CNPG' },
       {
         label: 'Needs attention',
@@ -154,17 +154,17 @@ export const ClusterListPage = () => {
           </div>
           <Flex gap="3" align="end">
             <Select
-              label="Namespace"
+              label="Project"
               value={namespace}
               onChange={key => setNamespace(String(key ?? ALL))}
               options={[
-                { id: ALL, label: 'All namespaces' },
+                { id: ALL, label: 'All projects' },
                 ...namespaces.map(n => ({ id: n, label: n })),
               ]}
             />
             <SearchField
               label="Search"
-              placeholder="namespace/name"
+              placeholder="project/name"
               value={search}
               onChange={setSearch}
             />
