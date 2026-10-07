@@ -10,12 +10,26 @@ const isClusterPath = (p: string) =>
   (p.startsWith(`${CNPG}/`) &&
     !p.startsWith(`${CNPG}/create`) &&
     !p.startsWith(`${CNPG}/dashboards`) &&
-    !p.startsWith(`${CNPG}/projects`));
+    !p.startsWith(`${CNPG}/projects`) &&
+    !p.startsWith(`${CNPG}/locations`));
 const isProjectPath = (p: string) =>
   p.startsWith(`${CNPG}/projects`) && !p.startsWith(`${CNPG}/projects/create`);
+const isLocationPath = (p: string) =>
+  p.startsWith(`${CNPG}/locations`) && !p.startsWith(`${CNPG}/locations/create`);
 
 /** The portal is CNPG-only, so the nav is a fixed list rather than every installed page. */
 const sections: Array<{ title: string; items: Item[] }> = [
+  {
+    title: 'Locations',
+    items: [
+      { label: 'Locations', to: `${CNPG}/locations`, isActive: isLocationPath },
+      {
+        label: 'Add location',
+        to: `${CNPG}/locations/create`,
+        isActive: p => p.startsWith(`${CNPG}/locations/create`),
+      },
+    ],
+  },
   {
     title: 'Projects',
     items: [

@@ -3,9 +3,6 @@ import { usePermission } from '@backstage/plugin-permission-react';
 import {
   Alert,
   ButtonLink,
-  Card,
-  CardBody,
-  CardHeader,
   Cell,
   CellText,
   type ColumnConfig,
@@ -31,18 +28,7 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import { clusterRouteRef, createClusterRouteRef, editProjectRouteRef } from '../routes';
-import { ErrorAlert, Fields, HealthBadge, Mono, ProjectHealthBadge } from './common';
-
-const Panel = ({ title, children }: { title: string; children: ReactNode }) => (
-  <Card>
-    <CardHeader>
-      <Text variant="title-x-small" as="h3">
-        {title}
-      </Text>
-    </CardHeader>
-    <CardBody>{children}</CardBody>
-  </Card>
-);
+import { ErrorAlert, Fields, HealthBadge, Mono, Panel, ProjectHealthBadge } from './common';
 
 type Row = PostgresClusterSummary & { id: string };
 

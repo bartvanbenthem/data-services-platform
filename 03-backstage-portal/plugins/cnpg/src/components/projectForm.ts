@@ -38,7 +38,15 @@ export const defaultProjectForm = (): ProjectForm => ({
 });
 
 const NAME = /^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$/;
-const RESERVED = ['default', 'projects', 'crossplane-system', 'cnpg-system', 'cert-manager'];
+const RESERVED = [
+  'default',
+  'projects',
+  'locations',
+  'crossplane-system',
+  'cnpg-system',
+  'cnpg-locations',
+  'cert-manager',
+];
 const QUANTITY = /^[0-9]+(Mi|Gi|Ti)$/;
 
 /** Field-level errors shown inline; mirrors the XRD's rules. */

@@ -160,6 +160,9 @@ cnpg:
   grafanaUrl: ${CNPG_GRAFANA_URL}
   defaultNamespace: demo
   storageClasses: []
+  locations:
+    # One Secret per location (Kubernetes cluster), with its kubeconfig.
+    namespace: cnpg-locations
   catalog:
     defaultOwner: group:default/guests
     refreshSeconds: 30

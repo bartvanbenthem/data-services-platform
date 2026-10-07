@@ -1,6 +1,6 @@
 # What the portal's backend may do in the platform cluster: manage
-# PostgresClusters, create and change Projects, and read the CNPG Clusters, pods, events and namespaces it
-# shows on the detail page. It never touches CNPG objects directly -- every
+# PostgresClusters, create and change Projects, and read the CNPG Clusters, pods, pod logs, events and namespaces it
+# shows on the detail page, and keep the kubeconfigs of locations (bottom). It never touches CNPG objects directly -- every
 # write goes through the PostgresCluster API (and so through the XRD schema).
 apiVersion: v1
 kind: Namespace
@@ -37,6 +37,10 @@ rules:
   - apiGroups: [""]
     resources: [namespaces, pods, events]
     verbs: [get, list, watch]
+  # The Logs tab: stdout of the cluster's pods (the backend checks the pod's cnpg.io/cluster label).
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -46,6 +50,38 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: backstage-cnpg-portal
+subjects:
+  - kind: ServiceAccount
+    name: backstage
+    namespace: backstage
+---
+# Locations: one Secret per Kubernetes cluster the platform can use, holding
+# its kubeconfig (key "kubeconfig", the layout Crossplane's provider-kubernetes
+# and provider-helm read). Secret access is limited to this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-locations
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backstage-cnpg-locations
+  namespace: cnpg-locations
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backstage-cnpg-locations
+  namespace: cnpg-locations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backstage-cnpg-locations
 subjects:
   - kind: ServiceAccount
     name: backstage

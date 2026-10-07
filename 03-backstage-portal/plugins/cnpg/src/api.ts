@@ -5,6 +5,10 @@ import {
 } from '@backstage/frontend-plugin-api';
 import { ResponseError } from '@backstage/errors';
 import type {
+  LocationHealth,
+  LocationSpec,
+  LocationSummary,
+  PodLogs,
   PostgresCluster,
   PostgresClusterDetails,
   PostgresClusterSummary,
@@ -38,6 +42,29 @@ export interface CreateProjectRequest {
   dryRun?: boolean;
 }
 
+export interface PodLogsRequest {
+  pod: string;
+  tailLines?: number;
+  /** The last terminated container instead of the running one. */
+  previous?: boolean;
+}
+
+export interface LocationRequest {
+  name: string;
+  /** kubeconfig file contents; validated and cut down to one context by the backend. */
+  kubeconfig: string;
+  context?: string;
+  spec: LocationSpec;
+}
+
+export interface LocationUpdate {
+  /** Replaces all settings. */
+  spec: LocationSpec;
+  /** A new kubeconfig; leave out to keep the stored one. */
+  kubeconfig?: string;
+  context?: string;
+}
+
 /** A change to an existing cluster or project. */
 export interface PatchRequest {
   /** JSON merge patch of the spec: only these fields change, null removes one. */
@@ -59,10 +86,22 @@ export interface CnpgApi {
     request: PatchRequest & { owner?: string | null },
   ): Promise<PostgresCluster>;
   deleteCluster(namespace: string, name: string): Promise<void>;
+  getPodLogs(namespace: string, name: string, request: PodLogsRequest): Promise<PodLogs>;
   listProjects(): Promise<ProjectSummary[]>;
   getProject(name: string): Promise<{ summary: ProjectSummary; resource: Project }>;
   createProject(request: CreateProjectRequest): Promise<Project>;
   patchProject(name: string, request: PatchRequest): Promise<Project>;
+  listLocations(): Promise<LocationSummary[]>;
+  getLocation(name: string): Promise<LocationSummary>;
+  /** Probes the location again instead of returning the cached health. */
+  checkLocation(name: string): Promise<LocationSummary>;
+  /** Validates a kubeconfig and probes its cluster without storing anything. */
+  testLocation(request: LocationRequest): Promise<LocationHealth>;
+  createLocation(request: LocationRequest): Promise<LocationSummary>;
+  /** Probes a replacement kubeconfig (or the stored one) without saving. */
+  testLocationUpdate(name: string, request: LocationUpdate): Promise<LocationHealth>;
+  updateLocation(name: string, request: LocationUpdate): Promise<LocationSummary>;
+  deleteLocation(name: string): Promise<void>;
 }
 
 export const cnpgApiRef = createApiRef<CnpgApi>().with({
@@ -115,6 +154,13 @@ export class CnpgClient implements CnpgApi {
     await this.#request(`/clusters/${enc(namespace)}/${enc(name)}`, { method: 'DELETE' });
   }
 
+  getPodLogs(namespace: string, name: string, request: PodLogsRequest) {
+    const query = new URLSearchParams({ pod: request.pod });
+    if (request.tailLines) query.set('tailLines', String(request.tailLines));
+    if (request.previous) query.set('previous', 'true');
+    return this.#request<PodLogs>(`/clusters/${enc(namespace)}/${enc(name)}/logs?${query}`);
+  }
+
   async listProjects() {
     return (await this.#request<{ items: ProjectSummary[] }>('/projects')).items;
   }
@@ -135,6 +181,52 @@ export class CnpgClient implements CnpgApi {
       method: 'PATCH',
       body: JSON.stringify(request),
     });
+  }
+
+  async listLocations() {
+    return (await this.#request<{ items: LocationSummary[] }>('/locations')).items;
+  }
+
+  getLocation(name: string) {
+    return this.#request<LocationSummary>(`/locations/${enc(name)}`);
+  }
+
+  checkLocation(name: string) {
+    return this.#request<LocationSummary>(`/locations/${enc(name)}/check`, { method: 'POST' });
+  }
+
+  async testLocation(request: LocationRequest) {
+    const { health } = await this.#request<{ health: LocationHealth }>('/locations', {
+      method: 'POST',
+      body: JSON.stringify({ ...request, dryRun: true }),
+    });
+    return health;
+  }
+
+  createLocation(request: LocationRequest) {
+    return this.#request<LocationSummary>('/locations', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async testLocationUpdate(name: string, request: LocationUpdate) {
+    const { health } = await this.#request<{ health: LocationHealth }>(
+      `/locations/${enc(name)}`,
+      { method: 'PUT', body: JSON.stringify({ ...request, dryRun: true }) },
+    );
+    return health;
+  }
+
+  updateLocation(name: string, request: LocationUpdate) {
+    return this.#request<LocationSummary>(`/locations/${enc(name)}`, {
+      method: 'PUT',
+      body: JSON.stringify(request),
+    });
+  }
+
+  async deleteLocation(name: string) {
+    await this.#request(`/locations/${enc(name)}`, { method: 'DELETE' });
   }
 
   async #request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -106,6 +106,14 @@ export interface ClusterEvent {
   lastSeen?: string;
 }
 
+/** The tail of one cluster pod's stdout, as the Logs tab shows it. */
+export interface PodLogs {
+  pod: string;
+  container: string;
+  /** Raw log text; CNPG writes one JSON object per line. */
+  text: string;
+}
+
 /** Everything the detail page shows, gathered in one round-trip. */
 export interface PostgresClusterDetails {
   summary: PostgresClusterSummary;

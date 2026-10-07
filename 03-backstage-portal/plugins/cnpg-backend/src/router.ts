@@ -16,15 +16,23 @@ import {
   cnpgClusterDeletePermission,
   cnpgClusterReadPermission,
   cnpgClusterUpdatePermission,
+  cnpgLocationCreatePermission,
+  cnpgLocationDeletePermission,
+  cnpgLocationReadPermission,
+  cnpgLocationUpdatePermission,
   cnpgProjectCreatePermission,
   cnpgProjectReadPermission,
   cnpgProjectUpdatePermission,
+  LOCATION_ENVIRONMENTS,
+  LOCATION_PROVIDERS,
   Project,
   PostgresClusterSummary,
   summarize,
   summarizeProject,
 } from '@internal/backstage-plugin-cnpg-common';
 import { CnpgKubernetesService } from './service/CnpgKubernetesService';
+import { MAX_KUBECONFIG_BYTES } from './service/kubeconfig';
+import { LocationService } from './service/LocationService';
 
 // DNS-1123 label, short enough that CNPG's derived names (<name>-pooler-rw,
 // <name>-1, ...) stay within Kubernetes' limits.
@@ -60,6 +68,16 @@ const patchSchema = z.object({
 const ownerLabel = (owner: string | null | undefined) =>
   owner === undefined ? undefined : { 'backstage.io/owner': owner || null };
 
+const logsQuery = z.object({
+  pod: z.string().regex(/^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/, 'invalid pod name'),
+  tailLines: z.coerce.number().int().min(1).max(5000).default(500),
+  sinceSeconds: z.coerce.number().int().min(1).optional(),
+  previous: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform(v => v === 'true'),
+});
+
 const createProjectSchema = z.object({
   // Also the namespace name; the XRD enforces the same rules.
   name: name.refine(v => !v.includes('--'), 'must not contain "--"'),
@@ -67,6 +85,43 @@ const createProjectSchema = z.object({
   description: z.string().max(200).optional(),
   /** Passed through to the XR; validated by the API server against the XRD. */
   spec: z.record(z.unknown()).optional(),
+  dryRun: z.boolean().optional(),
+});
+
+const locationSpecSchema = z
+  .object({
+    displayName: z.string().max(80).optional(),
+    description: z.string().max(300).optional(),
+    environment: z.enum(LOCATION_ENVIRONMENTS).optional(),
+    provider: z.enum(LOCATION_PROVIDERS).optional(),
+    region: z.string().max(63).optional(),
+    owner: labelValue.optional(),
+    storageClass: z
+      .string()
+      .regex(/^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/, 'invalid StorageClass name')
+      .optional(),
+    schedulable: z.boolean().optional(),
+  })
+  .strict();
+
+const kubeconfigText = z.string().min(1).max(MAX_KUBECONFIG_BYTES);
+
+const createLocationSchema = z.object({
+  name,
+  kubeconfig: kubeconfigText,
+  /** Context to keep; defaults to the kubeconfig's current-context. */
+  context: z.string().max(253).optional(),
+  spec: locationSpecSchema.default({}),
+  /** Validate and probe the kubeconfig without storing anything. */
+  dryRun: z.boolean().optional(),
+});
+
+const updateLocationSchema = z.object({
+  /** Replaces all settings. */
+  spec: locationSpecSchema,
+  /** Replaces the kubeconfig when given. */
+  kubeconfig: kubeconfigText.optional(),
+  context: z.string().max(253).optional(),
   dryRun: z.boolean().optional(),
 });
 
@@ -88,10 +143,12 @@ export async function createRouter(options: {
   permissions: PermissionsService;
   config: RootConfigService;
   k8s: CnpgKubernetesService;
+  locations: LocationService;
 }): Promise<express.Router> {
-  const { httpAuth, permissions, config, k8s } = options;
+  const { httpAuth, permissions, config, k8s, locations } = options;
   const router = Router();
-  router.use(express.json());
+  // Uploaded kubeconfigs can carry a few certificates.
+  router.use(express.json({ limit: '1mb' }));
 
   const authorize = async (req: express.Request, permission: BasicPermission) => {
     const credentials = await httpAuth.credentials(req);
@@ -143,6 +200,75 @@ export async function createRouter(options: {
       k8s.getProject(p.namespace).catch(() => undefined),
     ]);
     res.json({ ...details, summary: withProject(details.summary, project) });
+  });
+
+  router.get('/clusters/:namespace/:name/logs', async (req, res) => {
+    await authorize(req, cnpgClusterReadPermission);
+    const p = params(req);
+    const q = logsQuery.safeParse(req.query);
+    if (!q.success) throw new InputError(q.error.toString());
+    res.json(await k8s.logs(p.namespace, p.name, q.data));
+  });
+
+  // Locations: Kubernetes clusters the platform can use. The kubeconfig goes
+  // in, never out; responses carry only server, context and auth type.
+  router.get('/locations', async (req, res) => {
+    await authorize(req, cnpgLocationReadPermission);
+    res.json({ items: await locations.list() });
+  });
+
+  router.get('/locations/:name', async (req, res) => {
+    await authorize(req, cnpgLocationReadPermission);
+    const p = z.object({ name }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    res.json(await locations.get(p.data.name));
+  });
+
+  // Probe again now instead of using the cached result.
+  router.post('/locations/:name/check', async (req, res) => {
+    await authorize(req, cnpgLocationReadPermission);
+    const p = z.object({ name }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    res.json(await locations.get(p.data.name, { refresh: true }));
+  });
+
+  router.post('/locations', async (req, res) => {
+    await authorize(req, cnpgLocationCreatePermission);
+    const parsed = createLocationSchema.safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { dryRun, ...location } = parsed.data;
+    if (dryRun) {
+      res.json({ health: await locations.test(location) });
+      return;
+    }
+    res.status(201).json(await locations.create(location));
+  });
+
+  router.put('/locations/:name', async (req, res) => {
+    await authorize(req, cnpgLocationUpdatePermission);
+    const p = z.object({ name }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    const parsed = updateLocationSchema.safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { dryRun, ...update } = parsed.data;
+    if (dryRun) {
+      // Only a new kubeconfig has anything to test; settings are checked by the schema.
+      res.json({
+        health: update.kubeconfig
+          ? await locations.test({ kubeconfig: update.kubeconfig, context: update.context })
+          : (await locations.get(p.data.name, { refresh: true })).health,
+      });
+      return;
+    }
+    res.json(await locations.update(p.data.name, update));
+  });
+
+  router.delete('/locations/:name', async (req, res) => {
+    await authorize(req, cnpgLocationDeletePermission);
+    const p = z.object({ name }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    await locations.delete(p.data.name);
+    res.json({ status: 'deleted' });
   });
 
   router.get('/projects', async (req, res) => {

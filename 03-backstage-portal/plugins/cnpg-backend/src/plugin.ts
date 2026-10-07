@@ -5,6 +5,7 @@ import {
 import { cnpgPermissions } from '@internal/backstage-plugin-cnpg-common';
 import { createRouter } from './router';
 import { cnpgKubernetesServiceRef } from './service/CnpgKubernetesService';
+import { locationServiceRef } from './service/LocationService';
 
 /**
  * REST API for the CNPG portal: list / inspect / create / update / delete
@@ -23,10 +24,19 @@ export const cnpgPlugin = createBackendPlugin({
         permissionsRegistry: coreServices.permissionsRegistry,
         config: coreServices.rootConfig,
         k8s: cnpgKubernetesServiceRef,
+        locations: locationServiceRef,
       },
-      async init({ httpAuth, httpRouter, permissions, permissionsRegistry, config, k8s }) {
+      async init({
+        httpAuth,
+        httpRouter,
+        permissions,
+        permissionsRegistry,
+        config,
+        k8s,
+        locations,
+      }) {
         permissionsRegistry.addPermissions(cnpgPermissions);
-        httpRouter.use(await createRouter({ httpAuth, permissions, config, k8s }));
+        httpRouter.use(await createRouter({ httpAuth, permissions, config, k8s, locations }));
         httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
       },
     });

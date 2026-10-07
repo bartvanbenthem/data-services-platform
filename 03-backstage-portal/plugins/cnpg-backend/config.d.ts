@@ -25,6 +25,13 @@ export interface Config {
      * @visibility frontend
      */
     storageClasses?: string[];
+    locations?: {
+      /**
+       * Namespace in the platform cluster holding one Secret (with a
+       * kubeconfig) per location. Defaults to "cnpg-locations".
+       */
+      namespace?: string;
+    };
     catalog?: {
       /** Owner for PostgresClusters without a backstage.io/owner label. */
       defaultOwner?: string;

@@ -24,12 +24,14 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import {
+  clusterLogsRouteRef,
   clusterMonitoringRouteRef,
   clusterRouteRef,
   editClusterRouteRef,
   rootRouteRef,
 } from '../routes';
 import { ClusterDetails, ClusterDetailsSkeleton } from './ClusterDetails';
+import { ClusterLogs } from './ClusterLogs';
 import { ErrorAlert, HealthBadge } from './common';
 import { GrafanaDashboard } from './GrafanaDashboard';
 
@@ -107,11 +109,12 @@ const DeleteDialog = ({
   );
 };
 
-export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) => {
+export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'logs' }) => {
   const { namespace = '', name = '' } = useParams();
   const api = useApi(cnpgApiRef);
   const overviewLink = useRouteRef(clusterRouteRef);
   const monitoringLink = useRouteRef(clusterMonitoringRouteRef);
+  const logsLink = useRouteRef(clusterLogsRouteRef);
   const editLink = useRouteRef(editClusterRouteRef);
   const { allowed: canDelete } = usePermission({ permission: cnpgClusterDeletePermission });
   const { allowed: canUpdate } = usePermission({ permission: cnpgClusterUpdatePermission });
@@ -121,10 +124,11 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) =
 
   const params = { namespace, name };
   const tabs =
-    overviewLink && monitoringLink
+    overviewLink && monitoringLink && logsLink
       ? [
           { id: 'overview', label: 'Overview', href: overviewLink(params) },
           { id: 'monitoring', label: 'Monitoring', href: monitoringLink(params) },
+          { id: 'logs', label: 'Logs', href: logsLink(params) },
         ]
       : undefined;
 
@@ -161,6 +165,14 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) =
             namespace={namespace}
             name={name}
             uid={value.summary.dashboardUid}
+          />
+        )}
+        {value && tab === 'logs' && (
+          <ClusterLogs
+            namespace={namespace}
+            name={name}
+            pods={value.pods}
+            currentPrimary={value.summary.currentPrimary}
           />
         )}
       </Container>

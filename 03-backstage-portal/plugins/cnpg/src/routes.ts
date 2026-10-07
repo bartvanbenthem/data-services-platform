@@ -33,6 +33,36 @@ export const clusterMonitoringRouteRef = createSubRouteRef({
   path: '/:namespace/:name/monitoring',
 });
 
+/** /cnpg/:namespace/:name/logs -- stdout of the cluster's pods. */
+export const clusterLogsRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/:namespace/:name/logs',
+});
+
+/** /cnpg/locations -- the Kubernetes clusters the platform can use. */
+export const locationsRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/locations',
+});
+
+/** /cnpg/locations/create -- add a location from a kubeconfig. */
+export const createLocationRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/locations/create',
+});
+
+/** /cnpg/locations/:name -- one location and its health. */
+export const locationRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/locations/:name',
+});
+
+/** /cnpg/locations/:name/edit -- change a location's settings or kubeconfig. */
+export const editLocationRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/locations/:name/edit',
+});
+
 /** /cnpg/projects -- the project list. */
 export const projectsRouteRef = createSubRouteRef({
   parent: rootRouteRef,

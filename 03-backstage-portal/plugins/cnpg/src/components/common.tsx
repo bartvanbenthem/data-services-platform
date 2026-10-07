@@ -15,7 +15,7 @@ export const PostgresIcon = () => (
   </svg>
 );
 
-export type Health = 'healthy' | 'progressing' | 'degraded' | 'deleting';
+export type Health = 'healthy' | 'progressing' | 'degraded' | 'deleting' | 'unreachable';
 
 /**
  * One word for the state of a cluster, combining Crossplane's Ready
@@ -34,6 +34,7 @@ const HEALTH: Record<Health, { label: string; color: string }> = {
   progressing: { label: 'Provisioning', color: 'var(--bui-fg-info, #0969da)' },
   degraded: { label: 'Degraded', color: 'var(--bui-fg-warning, #9a6700)' },
   deleting: { label: 'Deleting', color: 'var(--bui-fg-secondary, #59636e)' },
+  unreachable: { label: 'Unreachable', color: 'var(--bui-fg-danger, #d1242f)' },
 };
 
 /** A project is healthy once its namespace, Prometheus and Grafana are up. */
@@ -42,7 +43,7 @@ export function projectHealth(p: ProjectSummary): Health {
   return p.ready ? 'healthy' : 'progressing';
 }
 
-const StatusDot = ({ health: h }: { health: Health }) => {
+export const StatusDot = ({ health: h }: { health: Health }) => {
   const { label, color } = HEALTH[h];
   return (
     <Flex align="center" gap="1">
@@ -130,6 +131,18 @@ export const Fields = ({ rows }: { rows: Array<[string, ReactNode]> }) => (
 
 export const Mono = ({ children }: { children: ReactNode }) => (
   <code style={{ fontFamily: 'var(--bui-font-monospace, monospace)', fontSize: '0.85em' }}>{children}</code>
+);
+
+/** A titled card. */
+export const Panel = ({ title, children }: { title: string; children: ReactNode }) => (
+  <Card>
+    <CardHeader>
+      <Text variant="title-x-small" as="h3">
+        {title}
+      </Text>
+    </CardHeader>
+    <CardBody>{children}</CardBody>
+  </Card>
 );
 
 /** A titled card holding a two-column grid of form fields. */

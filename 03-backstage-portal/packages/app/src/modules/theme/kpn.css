@@ -280,6 +280,13 @@ body:not(:has(.kpn-shell)) main article {
   border: 0;
 }
 
+.kpn-logs {
+  height: calc(100vh - 290px);
+  min-height: 420px;
+  padding: 12px;
+  background: var(--bui-bg-app);
+}
+
 .kpn-segmented {
   display: inline-flex;
   padding: 2px;

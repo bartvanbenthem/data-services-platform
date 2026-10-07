@@ -46,6 +46,33 @@ export const cnpgProjectUpdatePermission = createPermission({
   attributes: { action: 'update' },
 });
 
+/** List and inspect locations (never their kubeconfig) and run their health checks. */
+export const cnpgLocationReadPermission = createPermission({
+  name: 'cnpg.location.read',
+  attributes: { action: 'read' },
+});
+
+/**
+ * Add a location: hand the platform a kubeconfig for another cluster. Meant
+ * for platform admins only.
+ */
+export const cnpgLocationCreatePermission = createPermission({
+  name: 'cnpg.location.create',
+  attributes: { action: 'create' },
+});
+
+/** Change a location's settings or replace its kubeconfig. */
+export const cnpgLocationUpdatePermission = createPermission({
+  name: 'cnpg.location.update',
+  attributes: { action: 'update' },
+});
+
+/** Remove a location (and its stored kubeconfig). Databases on it are not touched. */
+export const cnpgLocationDeletePermission = createPermission({
+  name: 'cnpg.location.delete',
+  attributes: { action: 'delete' },
+});
+
 export const cnpgPermissions = [
   cnpgClusterReadPermission,
   cnpgClusterCreatePermission,
@@ -54,4 +81,8 @@ export const cnpgPermissions = [
   cnpgProjectReadPermission,
   cnpgProjectCreatePermission,
   cnpgProjectUpdatePermission,
+  cnpgLocationReadPermission,
+  cnpgLocationCreatePermission,
+  cnpgLocationUpdatePermission,
+  cnpgLocationDeletePermission,
 ];

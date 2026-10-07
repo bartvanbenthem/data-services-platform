@@ -8,6 +8,7 @@ import {
   CnpgKubernetesService,
   cnpgKubernetesServiceRef,
 } from './service/CnpgKubernetesService';
+import { LocationService, locationServiceRef } from './service/LocationService';
 import { PostgresCluster, Project } from '@internal/backstage-plugin-cnpg-common';
 
 const ordersDb: PostgresCluster = {
@@ -65,10 +66,40 @@ function fakeK8s() {
     applyProject: jest.fn(async (o: any) => ({ ...demoProject, metadata: { name: o.name } })),
     patch: jest.fn(async () => ordersDb),
     patchProject: jest.fn(async () => demoProject),
+    logs: jest.fn(async (_ns: string, _name: string, o: any) => ({
+      pod: o.pod,
+      container: 'postgres',
+      text: '{"level":"info","msg":"hi"}\n',
+    })),
   };
 }
 
-async function start(k8s: ReturnType<typeof fakeK8s>, allow = true) {
+const prodLocation = {
+  name: 'prod-ams',
+  spec: { environment: 'production', region: 'ams' },
+  connection: { server: 'https://prod:6443', context: 'prod', auth: 'token', insecureSkipTlsVerify: false },
+  health: { status: 'healthy', checkedAt: '2026-10-07T09:00:00Z', checks: [] },
+};
+
+function fakeLocations() {
+  return {
+    list: jest.fn(async () => [prodLocation]),
+    get: jest.fn(async (name: string) => {
+      if (name === 'prod-ams') return prodLocation;
+      throw new NotFoundError(`Location ${name} not found`);
+    }),
+    test: jest.fn(async () => prodLocation.health),
+    create: jest.fn(async (o: any) => ({ ...prodLocation, name: o.name })),
+    update: jest.fn(async () => prodLocation),
+    delete: jest.fn(async () => undefined),
+  };
+}
+
+async function start(
+  k8s: ReturnType<typeof fakeK8s>,
+  allow = true,
+  locations = fakeLocations(),
+) {
   const { server } = await startTestBackend({
     features: [
       cnpgPlugin,
@@ -76,6 +107,11 @@ async function start(k8s: ReturnType<typeof fakeK8s>, allow = true) {
         service: cnpgKubernetesServiceRef,
         deps: {},
         factory: () => k8s as unknown as CnpgKubernetesService,
+      }),
+      createServiceFactory({
+        service: locationServiceRef,
+        deps: {},
+        factory: () => locations as unknown as LocationService,
       }),
       mockServices.permissions.factory({
         result: allow ? AuthorizeResult.ALLOW : AuthorizeResult.DENY,
@@ -130,6 +166,125 @@ describe('cnpg backend', () => {
     expect(res.body.summary).toMatchObject({
       project: 'demo',
       grafanaUrl: 'http://grafana-demo.example.com',
+    });
+  });
+
+  it('returns pod logs with defaults for the query', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    const res = await request(server).get('/api/cnpg/clusters/demo/orders-db/logs?pod=orders-db-1');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ pod: 'orders-db-1', container: 'postgres' });
+    expect(k8s.logs).toHaveBeenCalledWith('demo', 'orders-db', {
+      pod: 'orders-db-1',
+      tailLines: 500,
+      previous: false,
+    });
+  });
+
+  it('rejects invalid log queries', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    for (const query of ['', '?pod=Bad_Pod', '?pod=orders-db-1&tailLines=100000']) {
+      const res = await request(server).get(`/api/cnpg/clusters/demo/orders-db/logs${query}`);
+      expect(res.status).toBe(400);
+    }
+    expect(k8s.logs).not.toHaveBeenCalled();
+  });
+
+  it('denies logs without read permission', async () => {
+    const server = await start(fakeK8s(), false);
+    const res = await request(server).get('/api/cnpg/clusters/demo/orders-db/logs?pod=orders-db-1');
+    expect(res.status).toBe(403);
+  });
+
+  describe('locations', () => {
+    it('lists locations', async () => {
+      const server = await start(fakeK8s());
+      const res = await request(server).get('/api/cnpg/locations');
+      expect(res.status).toBe(200);
+      expect(res.body.items).toEqual([expect.objectContaining({ name: 'prod-ams' })]);
+    });
+
+    it('tests a kubeconfig without storing it on dryRun', async () => {
+      const locations = fakeLocations();
+      const server = await start(fakeK8s(), true, locations);
+      const res = await request(server)
+        .post('/api/cnpg/locations')
+        .send({ name: 'new-loc', kubeconfig: 'apiVersion: v1', dryRun: true });
+      expect(res.status).toBe(200);
+      expect(res.body.health.status).toBe('healthy');
+      expect(locations.test).toHaveBeenCalledWith({
+        name: 'new-loc',
+        kubeconfig: 'apiVersion: v1',
+        spec: {},
+      });
+      expect(locations.create).not.toHaveBeenCalled();
+    });
+
+    it('creates a location with its settings', async () => {
+      const locations = fakeLocations();
+      const server = await start(fakeK8s(), true, locations);
+      const res = await request(server)
+        .post('/api/cnpg/locations')
+        .send({
+          name: 'new-loc',
+          kubeconfig: 'apiVersion: v1',
+          context: 'prod',
+          spec: { environment: 'test', provider: 'kind', schedulable: true },
+        });
+      expect(res.status).toBe(201);
+      expect(locations.create).toHaveBeenCalledWith({
+        name: 'new-loc',
+        kubeconfig: 'apiVersion: v1',
+        context: 'prod',
+        spec: { environment: 'test', provider: 'kind', schedulable: true },
+      });
+    });
+
+    it('rejects unknown settings and bad names', async () => {
+      const locations = fakeLocations();
+      const server = await start(fakeK8s(), true, locations);
+      for (const body of [
+        { name: 'Bad_Name', kubeconfig: 'x' },
+        { name: 'ok', kubeconfig: 'x', spec: { environment: 'staging' } },
+        { name: 'ok', kubeconfig: 'x', spec: { surprise: true } },
+        { name: 'ok', kubeconfig: '' },
+      ]) {
+        const res = await request(server).post('/api/cnpg/locations').send(body);
+        expect(res.status).toBe(400);
+      }
+      expect(locations.create).not.toHaveBeenCalled();
+    });
+
+    it('refreshes health on check and maps a missing location to 404', async () => {
+      const locations = fakeLocations();
+      const server = await start(fakeK8s(), true, locations);
+      expect((await request(server).post('/api/cnpg/locations/prod-ams/check')).status).toBe(200);
+      expect(locations.get).toHaveBeenCalledWith('prod-ams', { refresh: true });
+      expect((await request(server).get('/api/cnpg/locations/nope')).status).toBe(404);
+    });
+
+    it('updates and deletes', async () => {
+      const locations = fakeLocations();
+      const server = await start(fakeK8s(), true, locations);
+      const put = await request(server)
+        .put('/api/cnpg/locations/prod-ams')
+        .send({ spec: { displayName: 'Prod AMS' } });
+      expect(put.status).toBe(200);
+      expect(locations.update).toHaveBeenCalledWith('prod-ams', { spec: { displayName: 'Prod AMS' } });
+      expect((await request(server).delete('/api/cnpg/locations/prod-ams')).status).toBe(200);
+    });
+
+    it('needs permission', async () => {
+      const locations = fakeLocations();
+      const server = await start(fakeK8s(), false, locations);
+      expect((await request(server).get('/api/cnpg/locations')).status).toBe(403);
+      const res = await request(server)
+        .post('/api/cnpg/locations')
+        .send({ name: 'x', kubeconfig: 'y' });
+      expect(res.status).toBe(403);
+      expect(locations.create).not.toHaveBeenCalled();
     });
   });
 

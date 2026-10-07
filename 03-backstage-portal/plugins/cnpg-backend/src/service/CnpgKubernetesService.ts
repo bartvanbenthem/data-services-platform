@@ -23,6 +23,7 @@ import {
 import {
   ClusterEvent,
   InstancePod,
+  PodLogs,
   PostgresCluster,
   PostgresClusterDetails,
   Project,
@@ -50,6 +51,8 @@ export class CnpgKubernetesService {
   readonly #core: CoreV1Api;
   readonly #objects: KubernetesObjectApi;
   readonly #logger: LoggerService;
+  /** The platform cluster's credentials; other services in this plugin share them. */
+  readonly kubeConfig: KubeConfig;
 
   static fromConfig(config: RootConfigService, logger: LoggerService) {
     const kc = new KubeConfig();
@@ -74,6 +77,7 @@ export class CnpgKubernetesService {
     this.#core = kc.makeApiClient(CoreV1Api);
     this.#objects = KubernetesObjectApi.makeApiClient(kc);
     this.#logger = logger;
+    this.kubeConfig = kc;
   }
 
   async list(namespace?: string): Promise<PostgresCluster[]> {
@@ -130,6 +134,40 @@ export class CnpgKubernetesService {
       events,
       cnpgStatus: cnpg?.status,
     };
+  }
+
+  /**
+   * The tail of one of the cluster's pods' stdout. The pod must carry the
+   * cluster's label, so read access to a cluster never exposes the logs of
+   * other pods in its namespace. Instance pods log from the "postgres"
+   * container; other pods (bootstrap jobs) from their first one.
+   */
+  async logs(
+    namespace: string,
+    name: string,
+    options: { pod: string; tailLines: number; sinceSeconds?: number; previous?: boolean },
+  ): Promise<PodLogs> {
+    const { pod, tailLines, sinceSeconds, previous } = options;
+    const what = `Pod ${namespace}/${pod} of cluster ${name}`;
+    const p = await this.#call(() => this.#core.readNamespacedPod({ namespace, name: pod }), what);
+    if (p.metadata?.labels?.['cnpg.io/cluster'] !== name) {
+      throw new NotFoundError(`${what} not found`);
+    }
+    const containers = (p.spec?.containers ?? []).map(c => c.name);
+    const container = containers.includes('postgres') ? 'postgres' : containers[0];
+    const text = await this.#call(() =>
+      this.#core.readNamespacedPodLog({
+        namespace,
+        name: pod,
+        container,
+        tailLines,
+        sinceSeconds,
+        previous,
+        // A few thousand verbose lines; keeps one request from pulling megabytes.
+        limitBytes: 4 * 1024 * 1024,
+      }),
+    );
+    return { pod, container: container ?? '', text: text ?? '' };
   }
 
   /**
@@ -400,34 +438,38 @@ export class CnpgKubernetesService {
     );
   }
 
-  /** Maps Kubernetes API errors onto Backstage's error types (and HTTP codes). */
-  async #call<T>(fn: () => Promise<T>, what?: string): Promise<T> {
-    try {
-      return await fn();
-    } catch (e) {
-      if (e instanceof ApiException) {
-        const message = apiMessage(e);
-        switch (e.code) {
-          case 404:
-            throw new NotFoundError(what ? `${what} not found` : message);
-          case 409:
-            throw new ConflictError(message);
-          case 400:
-          case 422:
-            throw new InputError(message);
-          case 401:
-          case 403:
-            throw new NotAllowedError(message);
-          default:
-            throw new Error(`Kubernetes API error ${e.code}: ${message}`);
-        }
-      }
-      throw e;
-    }
+  #call<T>(fn: () => Promise<T>, what?: string): Promise<T> {
+    return kubeCall(fn, what);
   }
 }
 
-function apiMessage(e: ApiException<unknown>): string {
+/** Maps Kubernetes API errors onto Backstage's error types (and HTTP codes). */
+export async function kubeCall<T>(fn: () => Promise<T>, what?: string): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof ApiException) {
+      const message = apiMessage(e);
+      switch (e.code) {
+        case 404:
+          throw new NotFoundError(what ? `${what} not found` : message);
+        case 409:
+          throw new ConflictError(message);
+        case 400:
+        case 422:
+          throw new InputError(message);
+        case 401:
+        case 403:
+          throw new NotAllowedError(message);
+        default:
+          throw new Error(`Kubernetes API error ${e.code}: ${message}`);
+      }
+    }
+    throw e;
+  }
+}
+
+export function apiMessage(e: ApiException<unknown>): string {
   const body = e.body as any;
   if (typeof body === 'string') {
     try {
