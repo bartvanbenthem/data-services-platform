@@ -10,19 +10,6 @@ namespace with its own Prometheus and Grafana) and create PostgreSQL clusters in
 | [`02-crossplane-api/`](02-crossplane-api/) | `PostgresCluster` (`cnpg.cncp.nl/v1alpha1`): one namespaced API object that bundles everything a production CNPG cluster needs, including metrics, alerts and the CNPG Grafana dashboard. `Project` (`platform.cncp.nl/v1alpha1`): a namespace with its own Prometheus and Grafana, RoleBindings, an optional quota and deletion protection | Crossplane v2 |
 | [`03-backstage-portal/`](03-backstage-portal/) | Portal to create projects and clusters and to inspect them; catalog integration and Software Templates | Backstage (new frontend + backend system) |
 
-```
- Backstage portal ──(Project)─────────▶ Crossplane v2 composition ──▶ Namespace, Prometheus, Grafana,
-   03-backstage-portal                     02-crossplane-api               GrafanaDatasource, RoleBindings, quota
-          │                                                                       ▲ scrapes / imports
-          └────────(PostgresCluster ──▶ Crossplane v2 composition ──▶ CNPG Cluster, Pooler, ObjectStore,
-                    in a project)                                          ScheduledBackup, Database,
-                                                                           PodMonitor, PrometheusRule,
-                                                                           GrafanaDashboard
-                                                                                  │
-                                                                                  ▼
-                                                                    CloudNativePG operator (01-operator)
-```
-
 ## Install
 
 Prerequisites in the target cluster ([`00-deps/`](00-deps/README.md)): cert-manager (for the backup
