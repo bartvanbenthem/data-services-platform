@@ -1,0 +1,84 @@
+# Prometheus for the demo namespace, run by the Prometheus Operator
+# (kube-prometheus-stack, see ../README.md).
+#
+# Scrapes:
+#   - every PodMonitor and PrometheusRule in "demo" (what a PostgresCluster creates)
+#   - the kubelet/cAdvisor, kube-state-metrics and node-exporter ServiceMonitors
+#     that kube-prometheus-stack created in prometheus-operator-system; the CNPG
+#     dashboard's CPU/memory panels need them
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: demo
+---
+# Cluster-wide because the kubelet targets live in kube-system and
+# kube-state-metrics/node-exporter in prometheus-operator-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: demo-prometheus
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/metrics, nodes/proxy, services, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - nonResourceURLs: [/metrics, /metrics/cadvisor]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: demo-prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: demo-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: demo
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: demo
+spec:
+  serviceAccountName: prometheus
+  replicas: 1
+  retention: 7d
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {memory: 2Gi}
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
+  # Empty selector with no namespace selector = every object in "demo" only.
+  podMonitorSelector: {}
+  ruleSelector: {}
+  # Only the node/container ServiceMonitors from kube-prometheus-stack, not
+  # the control-plane ones (apiserver, etcd, scheduler, ...).
+  serviceMonitorNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: prometheus-operator-system
+  serviceMonitorSelector:
+    matchLabels:
+      release: prometheus-operator
+    matchExpressions:
+      - key: app
+        operator: NotIn
+        values:
+          - kube-prometheus-stack-apiserver
+          - kube-prometheus-stack-coredns
+          - kube-prometheus-stack-kube-controller-manager
+          - kube-prometheus-stack-kube-etcd
+          - kube-prometheus-stack-kube-proxy
+          - kube-prometheus-stack-kube-scheduler
+          - kube-prometheus-stack-operator
