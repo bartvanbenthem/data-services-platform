@@ -1,0 +1,543 @@
+# Source for composition.yaml. hack/generate.py replaces the #@DASHBOARD_JSON@
+# and #@ALERT_RULES@ marker lines with ../../src/dashboards/cnpg-cluster.json
+# and ../../src/alerts/cnpg-cluster-rules.yaml (escaped for Go templating).
+# Edit this file, then run `make generate`; never edit composition.yaml.
+#
+# Crossplane v2: the namespaced PostgresCluster XR composes the CNPG,
+# Prometheus Operator and grafana-operator objects *directly* -- no
+# provider-kubernetes Object wrappers. Crossplane's own ServiceAccount needs
+# RBAC for those kinds (../../install/rbac.yaml) and reads their live status
+# straight from .observed.resources["<name>"].resource.status.
+#
+# Readiness: every composed resource sets gotemplating.fn.crossplane.io/ready
+# explicitly (non-managed resources have no generic Ready signal), so the
+# XR's own Ready condition means "Cluster healthy + every extra object exists".
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: postgrescluster
+  labels:
+    cnpg.cncp.nl/api: postgrescluster
+spec:
+  compositeTypeRef:
+    apiVersion: cnpg.cncp.nl/v1alpha1
+    kind: PostgresCluster
+  mode: Pipeline
+  pipeline:
+    - step: render
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $name := $xr.metadata.name }}
+            {{- $namespace := $xr.metadata.namespace }}
+            {{- $observed := .observed.resources | default (dict) }}
+
+            {{- /* ---- defaults (the API server applies the XRD defaults; these keep `crossplane render` and older objects safe) ---- */}}
+            {{- $instances := int ($spec.instances | default 3) }}
+            {{- $storage := $spec.storage | default (dict) }}
+            {{- $res := $spec.resources | default (dict) }}
+            {{- $pg := $spec.postgresql | default (dict) }}
+            {{- $db := $spec.database | default (dict) }}
+            {{- $ha := $spec.highAvailability | default (dict) }}
+            {{- $syncReplicas := int (dig "synchronousReplicas" 0 $ha) }}
+            {{- $pooler := $spec.pooler | default (dict) }}
+            {{- $poolerEnabled := dig "enabled" false $pooler }}
+            {{- $backup := $spec.backup | default (dict) }}
+            {{- $backupEnabled := dig "enabled" false $backup }}
+            {{- $mon := $spec.monitoring | default (dict) }}
+            {{- $monEnabled := dig "enabled" true $mon }}
+            {{- $monLabels := dig "podMonitorLabels" (dict) $mon }}
+            {{- $rulesEnabled := and $monEnabled (dig "prometheusRule" "enabled" true $mon) }}
+            {{- $excludeRules := dig "prometheusRule" "excludeRules" (list) $mon }}
+            {{- $dashEnabled := dig "grafanaDashboard" "enabled" true $mon }}
+            {{- $dashSelector := dig "grafanaDashboard" "instanceSelector" (dict) $mon }}
+            {{- if not $dashSelector }}{{ $dashSelector = dict "dashboards.paas.cncp.nl/scope" $namespace }}{{ end }}
+            {{- $dashUid := printf "cnpg-%s" (sha1sum (printf "%s/%s" $namespace $name) | trunc 20) }}
+            {{- $objectStoreName := printf "%s-backup" $name }}
+
+            {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "cnpg.cncp.nl/postgrescluster" $name }}
+
+            {{- /* ================= CloudNativePG Cluster ================= */}}
+            {{- $clusterObs := index $observed "cluster" }}
+            {{- $cstatus := dict }}
+            {{- if $clusterObs }}{{ $cstatus = dig "resource" "status" (dict) $clusterObs }}{{ end }}
+            {{- $clusterReady := false }}
+            {{- range (dig "conditions" (list) $cstatus) }}
+            {{- if and (eq .type "Ready") (eq .status "True") }}{{ $clusterReady = true }}{{ end }}
+            {{- end }}
+            ---
+            apiVersion: postgresql.cnpg.io/v1
+            kind: Cluster
+            metadata:
+              name: {{ $name }}
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "cluster" }}
+                gotemplating.fn.crossplane.io/ready: {{ if $clusterReady }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              description: {{ printf "PostgresCluster %s/%s (cnpg.cncp.nl)" $namespace $name | quote }}
+              instances: {{ $instances }}
+              imageCatalogRef:
+                apiGroup: postgresql.cnpg.io
+                kind: ClusterImageCatalog
+                name: {{ $spec.imageCatalog | default "postgresql-standard-trixie" | quote }}
+                major: {{ int ($spec.postgresVersion | default 17) }}
+              enableSuperuserAccess: {{ $spec.enableSuperuserAccess | default false }}
+              primaryUpdateStrategy: {{ dig "primaryUpdateStrategy" "unsupervised" $ha }}
+              primaryUpdateMethod: {{ dig "primaryUpdateMethod" "switchover" $ha }}
+              # Copied by CNPG onto every object it generates (pods, PVCs,
+              # services, secrets): lets Prometheus relabelling and the
+              # Backstage Kubernetes plugin find all of them.
+              inheritedMetadata:
+                labels:
+                  cnpg.cncp.nl/postgrescluster: {{ $name | quote }}
+                  backstage.io/kubernetes-id: {{ $name | quote }}
+              storage:
+                size: {{ dig "size" "10Gi" $storage | quote }}
+                {{- with $storage.storageClass }}
+                storageClass: {{ . | quote }}
+                {{- end }}
+              {{- with $spec.walStorage }}
+              walStorage:
+                size: {{ .size | quote }}
+                {{- with .storageClass }}
+                storageClass: {{ . | quote }}
+                {{- end }}
+              {{- end }}
+              resources:
+                requests:
+                  cpu: {{ dig "requests" "cpu" "500m" $res | quote }}
+                  memory: {{ dig "requests" "memory" "1Gi" $res | quote }}
+                limits:
+                  {{- with (dig "limits" "cpu" "" $res) }}
+                  cpu: {{ . | quote }}
+                  {{- end }}
+                  memory: {{ dig "limits" "memory" "1Gi" $res | quote }}
+              affinity:
+                enablePodAntiAffinity: true
+                podAntiAffinityType: {{ dig "podAntiAffinityType" "preferred" $ha }}
+                topologyKey: kubernetes.io/hostname
+              {{- if dig "zoneSpread" true $ha }}
+              topologySpreadConstraints:
+                - maxSkew: 1
+                  topologyKey: topology.kubernetes.io/zone
+                  # ScheduleAnyway: single-zone clusters keep working; the
+                  # CNPGClusterZoneSpreadWarning alert flags the imbalance.
+                  whenUnsatisfiable: ScheduleAnyway
+                  labelSelector:
+                    matchLabels:
+                      cnpg.io/cluster: {{ $name }}
+                      cnpg.io/podRole: instance
+              {{- end }}
+              {{- if or $pg.parameters $pg.pgHba $pg.sharedPreloadLibraries (gt $syncReplicas 0) }}
+              postgresql:
+                {{- with $pg.parameters }}
+                parameters:
+                  {{- range $k, $v := . }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+                {{- end }}
+                {{- with $pg.pgHba }}
+                pg_hba:
+                  {{- range . }}
+                  - {{ . | quote }}
+                  {{- end }}
+                {{- end }}
+                {{- with $pg.sharedPreloadLibraries }}
+                shared_preload_libraries:
+                  {{- range . }}
+                  - {{ . | quote }}
+                  {{- end }}
+                {{- end }}
+                {{- if gt $syncReplicas 0 }}
+                synchronous:
+                  method: any
+                  number: {{ $syncReplicas }}
+                  dataDurability: {{ dig "synchronousDataDurability" "preferred" $ha }}
+                {{- end }}
+              {{- end }}
+              bootstrap:
+                initdb:
+                  database: {{ dig "name" "app" $db | quote }}
+                  owner: {{ dig "owner" "app" $db | quote }}
+                  encoding: {{ dig "encoding" "UTF8" $db | quote }}
+                  localeCollate: {{ dig "localeCollate" "C" $db | quote }}
+                  localeCType: {{ dig "localeCType" "C" $db | quote }}
+              {{- if or $spec.roles $spec.expose }}
+              managed:
+                {{- with $spec.roles }}
+                roles:
+                  {{- range . }}
+                  - name: {{ .name | quote }}
+                    ensure: present
+                    login: {{ dig "login" true . }}
+                    createdb: {{ dig "createdb" false . }}
+                    connectionLimit: {{ int (dig "connectionLimit" -1 .) }}
+                    {{- with .inRoles }}
+                    inRoles:
+                      {{- range . }}
+                      - {{ . | quote }}
+                      {{- end }}
+                    {{- end }}
+                    {{- with .passwordSecret }}
+                    passwordSecret:
+                      name: {{ . | quote }}
+                    {{- end }}
+                  {{- end }}
+                {{- end }}
+                {{- with $spec.expose }}
+                services:
+                  additional:
+                    - selectorType: rw
+                      serviceTemplate:
+                        metadata:
+                          name: {{ $name }}-external
+                          {{- with .annotations }}
+                          annotations:
+                            {{- range $k, $v := . }}
+                            {{ $k }}: {{ $v | quote }}
+                            {{- end }}
+                          {{- end }}
+                        spec:
+                          type: {{ .type | default "LoadBalancer" }}
+                          {{- with .loadBalancerSourceRanges }}
+                          loadBalancerSourceRanges:
+                            {{- range . }}
+                            - {{ . | quote }}
+                            {{- end }}
+                          {{- end }}
+                {{- end }}
+              {{- end }}
+              {{- if $backupEnabled }}
+              plugins:
+                - name: barman-cloud.cloudnative-pg.io
+                  isWALArchiver: true
+                  parameters:
+                    barmanObjectName: {{ $objectStoreName }}
+              {{- end }}
+
+            {{- /* ================= Backups: Barman Cloud ObjectStore + ScheduledBackup ================= */}}
+            {{- if $backupEnabled }}
+            {{- $creds := $backup.s3Credentials }}
+            ---
+            apiVersion: barmancloud.cnpg.io/v1
+            kind: ObjectStore
+            metadata:
+              name: {{ $objectStoreName }}
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "objectstore" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "objectstore" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              retentionPolicy: {{ dig "retentionPolicy" "30d" $backup | quote }}
+              configuration:
+                destinationPath: {{ $backup.destinationPath | quote }}
+                {{- with $backup.endpointURL }}
+                endpointURL: {{ . | quote }}
+                {{- end }}
+                {{- with $backup.endpointCA }}
+                endpointCA:
+                  name: {{ .secretName | quote }}
+                  key: {{ .key | default "ca.crt" | quote }}
+                {{- end }}
+                s3Credentials:
+                  accessKeyId:
+                    name: {{ $creds.secretName | quote }}
+                    key: {{ $creds.accessKeyIdKey | default "ACCESS_KEY_ID" | quote }}
+                  secretAccessKey:
+                    name: {{ $creds.secretName | quote }}
+                    key: {{ $creds.secretAccessKeyKey | default "ACCESS_SECRET_KEY" | quote }}
+                  {{- with $creds.regionKey }}
+                  region:
+                    name: {{ $creds.secretName | quote }}
+                    key: {{ . | quote }}
+                  {{- end }}
+                wal:
+                  compression: {{ dig "compression" "gzip" $backup }}
+                  maxParallel: 2
+                data:
+                  compression: {{ dig "compression" "gzip" $backup }}
+                  jobs: 2
+            ---
+            apiVersion: postgresql.cnpg.io/v1
+            kind: ScheduledBackup
+            metadata:
+              name: {{ $name }}-scheduled
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "scheduled-backup" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "scheduled-backup" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              schedule: {{ dig "schedule" "0 0 2 * * *" $backup | quote }}
+              # Take the first base backup right away: WAL archiving alone is
+              # not restorable until a base backup exists.
+              immediate: true
+              backupOwnerReference: self
+              method: plugin
+              pluginConfiguration:
+                name: barman-cloud.cloudnative-pg.io
+              cluster:
+                name: {{ $name }}
+            {{- end }}
+
+            {{- /* ================= Declarative databases ================= */}}
+            {{- range $spec.databases }}
+            {{- $key := printf "database-%s" (.name | replace "_" "-") }}
+            {{- $dbObs := index $observed $key }}
+            ---
+            apiVersion: postgresql.cnpg.io/v1
+            kind: Database
+            metadata:
+              name: {{ $name }}-{{ .name | replace "_" "-" }}
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation $key }}
+                gotemplating.fn.crossplane.io/ready: {{ if and $dbObs (dig "resource" "status" "applied" false $dbObs) }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              cluster:
+                name: {{ $name }}
+              name: {{ .name | quote }}
+              owner: {{ .owner | quote }}
+              ensure: present
+              databaseReclaimPolicy: {{ .reclaimPolicy | default "retain" }}
+              {{- with .extensions }}
+              extensions:
+                {{- range . }}
+                - name: {{ . | quote }}
+                  ensure: present
+                {{- end }}
+              {{- end }}
+            {{- end }}
+
+            {{- /* ================= PgBouncer poolers ================= */}}
+            {{- if $poolerEnabled }}
+            {{- $poolerTypes := list "rw" }}
+            {{- if dig "readOnly" false $pooler }}{{ $poolerTypes = append $poolerTypes "ro" }}{{ end }}
+            {{- range $type := $poolerTypes }}
+            ---
+            apiVersion: postgresql.cnpg.io/v1
+            kind: Pooler
+            metadata:
+              name: {{ $name }}-pooler-{{ $type }}
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation (printf "pooler-%s" $type) }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed (printf "pooler-%s" $type) }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              cluster:
+                name: {{ $name }}
+              instances: {{ int (dig "instances" 2 $pooler) }}
+              type: {{ $type }}
+              pgbouncer:
+                poolMode: {{ dig "poolMode" "transaction" $pooler }}
+                parameters:
+                  max_client_conn: {{ dig "maxClientConn" 1000 $pooler | int | toString | quote }}
+                  default_pool_size: {{ dig "defaultPoolSize" 25 $pooler | int | toString | quote }}
+              template:
+                metadata:
+                  labels:
+                    cnpg.cncp.nl/postgrescluster: {{ $name | quote }}
+                    backstage.io/kubernetes-id: {{ $name | quote }}
+                spec:
+                  containers: []
+                  affinity:
+                    podAntiAffinity:
+                      preferredDuringSchedulingIgnoredDuringExecution:
+                        - weight: 100
+                          podAffinityTerm:
+                            topologyKey: kubernetes.io/hostname
+                            labelSelector:
+                              matchLabels:
+                                cnpg.io/poolerName: {{ $name }}-pooler-{{ $type }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ================= Prometheus metrics ================= */}}
+            {{- if $monEnabled }}
+            ---
+            # Replaces the deprecated Cluster.spec.monitoring.enablePodMonitor:
+            # scrapes the CNPG exporter (port "metrics", 9187) on every instance.
+            apiVersion: monitoring.coreos.com/v1
+            kind: PodMonitor
+            metadata:
+              name: {{ $name }}
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "podmonitor" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "podmonitor" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := merge (dict) $monLabels $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              selector:
+                matchLabels:
+                  cnpg.io/cluster: {{ $name }}
+                  cnpg.io/podRole: instance
+              podMetricsEndpoints:
+                - port: metrics
+            {{- if $poolerEnabled }}
+            ---
+            # PgBouncer exporter (port "metrics", 9127) on every pooler pod.
+            apiVersion: monitoring.coreos.com/v1
+            kind: PodMonitor
+            metadata:
+              name: {{ $name }}-pooler
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "podmonitor-pooler" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "podmonitor-pooler" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := merge (dict) $monLabels $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              selector:
+                matchLabels:
+                  cnpg.io/cluster: {{ $name }}
+                  cnpg.io/podRole: pooler
+              podMetricsEndpoints:
+                - port: metrics
+            {{- end }}
+            {{- end }}
+
+            {{- if $rulesEnabled }}
+            ---
+            apiVersion: monitoring.coreos.com/v1
+            kind: PrometheusRule
+            metadata:
+              name: {{ $name }}-alerts
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "prometheusrule" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "prometheusrule" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := merge (dict) $monLabels $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              groups:
+                - name: cloudnative-pg/{{ $namespace }}/{{ $name }}
+                  rules:
+                    #@ALERT_RULES@
+            {{- end }}
+
+            {{- /* ================= Grafana dashboard ================= */}}
+            {{- if $dashEnabled }}
+            ---
+            apiVersion: grafana.integreatly.org/v1beta1
+            kind: GrafanaDashboard
+            metadata:
+              name: {{ $name }}-cnpg
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "dashboard" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "dashboard" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              instanceSelector:
+                matchLabels:
+                  {{- range $k, $v := $dashSelector }}
+                  {{ $k }}: {{ $v | quote }}
+                  {{- end }}
+              allowCrossNamespaceImport: {{ dig "grafanaDashboard" "allowCrossNamespaceImport" false $mon }}
+              folder: {{ dig "grafanaDashboard" "folder" "CloudNativePG" $mon | quote }}
+              # Unique per cluster (the upstream JSON hardcodes "cloudnative-pg",
+              # which made every cluster's dashboard collide in one Grafana).
+              uid: {{ $dashUid }}
+              resyncPeriod: 10m
+              datasources:
+                - inputName: DS_PROMETHEUS
+                  datasourceName: {{ dig "grafanaDashboard" "datasourceName" "prometheus" $mon | quote }}
+              # CloudNativePG's official Grafana dashboard (Apache-2.0), same
+              # JSON as cn-paas-operator-poc's internal/cnpg/dashboards, with
+              # title/uid and the namespace/cluster variables preset to this
+              # cluster by hack/generate.py.
+              json: |
+                #@DASHBOARD_JSON@
+            {{- end }}
+
+            {{- /* ================= XR status ================= */}}
+            {{- $osObs := index $observed "objectstore" }}
+            {{- $window := dict }}
+            {{- if $osObs }}{{ $window = dig "resource" "status" "serverRecoveryWindow" $name (dict) $osObs }}{{ end }}
+            {{- $phase := dig "phase" "Provisioning" $cstatus }}
+            {{- $ready := int (dig "readyInstances" 0 $cstatus) }}
+            {{- $msg := printf "Waiting for CNPG Cluster %s (phase: %s, %d/%d instances ready)" $name $phase $ready $instances }}
+            {{- if $clusterReady }}{{ $msg = printf "CNPG Cluster %s is ready (%d/%d instances)" $name $ready $instances }}{{ end }}
+            ---
+            apiVersion: cnpg.cncp.nl/v1alpha1
+            kind: PostgresCluster
+            status:
+              ready: {{ $clusterReady }}
+              phase: {{ $phase | quote }}
+              instances: {{ int (dig "instances" 0 $cstatus) }}
+              readyInstances: {{ $ready }}
+              currentPrimary: {{ dig "currentPrimary" "" $cstatus | quote }}
+              image: {{ dig "image" "" $cstatus | quote }}
+              message: {{ $msg | quote }}
+              endpoints:
+                readWrite: {{ printf "%s-rw.%s.svc" $name $namespace }}
+                readOnly: {{ printf "%s-ro.%s.svc" $name $namespace }}
+                read: {{ printf "%s-r.%s.svc" $name $namespace }}
+                {{- if $poolerEnabled }}
+                pooler: {{ printf "%s-pooler-rw.%s.svc" $name $namespace }}
+                {{- if dig "readOnly" false $pooler }}
+                poolerReadOnly: {{ printf "%s-pooler-ro.%s.svc" $name $namespace }}
+                {{- end }}
+                {{- end }}
+              secrets:
+                app: {{ $name }}-app
+                {{- if $spec.enableSuperuserAccess }}
+                superuser: {{ $name }}-superuser
+                {{- end }}
+              {{- if $backupEnabled }}
+              backup:
+                lastSuccessfulBackup: {{ dig "lastSuccessfulBackupTime" "" $window | quote }}
+                firstRecoverabilityPoint: {{ dig "firstRecoverabilityPoint" "" $window | quote }}
+              {{- end }}
+              {{- if $dashEnabled }}
+              monitoring:
+                dashboardUid: {{ $dashUid }}
+              {{- end }}
+            ---
+            # Custom condition next to Crossplane's own Ready/Synced (those
+            # two types are reserved). Carries CNPG's view of health.
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ClaimConditions
+            conditions:
+              - type: PostgresReady
+                status: {{ if $clusterReady }}"True"{{ else }}"False"{{ end }}
+                reason: {{ if $clusterReady }}ClusterHealthy{{ else }}ClusterNotReady{{ end }}
+                message: {{ $msg | quote }}
+                target: Composite

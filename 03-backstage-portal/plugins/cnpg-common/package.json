@@ -1,0 +1,37 @@
+{
+  "name": "@internal/backstage-plugin-cnpg-common",
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "private": true,
+  "description": "Types and permissions shared by the cnpg (CloudNativePG portal) plugins",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "publishConfig": {
+    "access": "public",
+    "main": "dist/index.cjs.js",
+    "module": "dist/index.esm.js",
+    "types": "dist/index.d.ts"
+  },
+  "backstage": {
+    "role": "common-library",
+    "pluginId": "cnpg"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "backstage-cli package build",
+    "lint": "backstage-cli package lint",
+    "test": "backstage-cli package test",
+    "clean": "backstage-cli package clean",
+    "prepack": "backstage-cli package prepack",
+    "postpack": "backstage-cli package postpack"
+  },
+  "devDependencies": {
+    "@backstage/cli": "^0.36.6"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@backstage/plugin-permission-common": "^0.9.11"
+  }
+}

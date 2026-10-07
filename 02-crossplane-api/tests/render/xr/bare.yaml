@@ -1,0 +1,15 @@
+# Everything optional switched off: only the CNPG Cluster is composed.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: scratch-db
+  namespace: sandbox
+spec:
+  instances: 1
+  enableSuperuserAccess: true
+  highAvailability:
+    zoneSpread: false
+  monitoring:
+    enabled: false
+    grafanaDashboard:
+      enabled: false

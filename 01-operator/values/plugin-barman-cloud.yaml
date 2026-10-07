@@ -1,0 +1,15 @@
+# Production overrides for the vendored ../charts/plugin-barman-cloud chart
+# (CNPG-I Barman Cloud plugin: WAL archiving + base backups to S3/GCS/Azure
+# via barmancloud.cnpg.io/v1 ObjectStore). Requires cert-manager: the chart
+# issues the mTLS certificates the operator and plugin talk over.
+#
+# Must be installed in the same namespace as the CNPG operator.
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

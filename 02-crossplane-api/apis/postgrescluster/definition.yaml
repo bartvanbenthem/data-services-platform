@@ -1,0 +1,465 @@
+# PostgresCluster: a namespaced Crossplane v2 composite resource that bundles
+# everything a production CloudNativePG database needs (Cluster, Pooler,
+# Barman Cloud ObjectStore + ScheduledBackup, Databases, PodMonitors,
+# PrometheusRule, GrafanaDashboard) behind one small, opinionated API.
+#
+# Crossplane v2: apiextensions.crossplane.io/v2 + scope: Namespaced. There is
+# no claim/XR split any more -- users (and Backstage) create PostgresCluster
+# objects directly in their own namespace, and the composition composes the
+# CNPG/Prometheus/Grafana objects directly (no provider-kubernetes Object
+# wrappers). See ../../README.md.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: postgresclusters.cnpg.cncp.nl
+spec:
+  group: cnpg.cncp.nl
+  scope: Namespaced
+  names:
+    kind: PostgresCluster
+    plural: postgresclusters
+    shortNames: [pgc]
+    categories: [crossplane, cnpg]
+  defaultCompositionRef:
+    name: postgrescluster
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      additionalPrinterColumns:
+        - name: Version
+          type: integer
+          jsonPath: .spec.postgresVersion
+        - name: Instances
+          type: integer
+          jsonPath: .spec.instances
+        - name: Ready-Instances
+          type: integer
+          jsonPath: .status.readyInstances
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Primary
+          type: string
+          jsonPath: .status.currentPrimary
+        # Crossplane appends SYNCED, READY, COMPOSITION and AGE itself.
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: A production-ready PostgreSQL cluster managed by CloudNativePG.
+          properties:
+            spec:
+              type: object
+              x-kubernetes-validations:
+                - rule: "!has(self.backup) || !self.backup.enabled || (has(self.backup.destinationPath) && has(self.backup.s3Credentials))"
+                  message: backup.destinationPath and backup.s3Credentials are required when backup.enabled is true
+                - rule: "!has(self.highAvailability) || !has(self.highAvailability.synchronousReplicas) || self.highAvailability.synchronousReplicas < self.instances"
+                  message: highAvailability.synchronousReplicas must be lower than instances
+              properties:
+                postgresVersion:
+                  type: integer
+                  description: PostgreSQL major version, resolved to a digest-pinned image through the ClusterImageCatalog.
+                  enum: [14, 15, 16, 17, 18]
+                  default: 17
+                  x-kubernetes-validations:
+                    - rule: self >= oldSelf
+                      message: postgresVersion cannot be downgraded (major upgrades only go forward)
+                imageCatalog:
+                  type: string
+                  description: Name of the ClusterImageCatalog to resolve postgresVersion in (installed by 01-operator).
+                  default: postgresql-standard-trixie
+                instances:
+                  type: integer
+                  description: Number of PostgreSQL instances (1 primary + N-1 hot standbys). Use 3 or more for production.
+                  minimum: 1
+                  maximum: 9
+                  default: 3
+                storage:
+                  type: object
+                  default: {}
+                  description: PGDATA volume.
+                  properties:
+                    size:
+                      type: string
+                      description: Volume size, e.g. 20Gi. Can be increased later if the StorageClass allows expansion.
+                      default: 10Gi
+                      pattern: '^[0-9]+(Mi|Gi|Ti)$'
+                    storageClass:
+                      type: string
+                      description: StorageClass name. Uses the cluster default when unset.
+                walStorage:
+                  type: object
+                  description: Separate volume for WAL files. Recommended for production to isolate WAL I/O and avoid PGDATA filling up from WAL.
+                  properties:
+                    size:
+                      type: string
+                      pattern: '^[0-9]+(Mi|Gi|Ti)$'
+                    storageClass:
+                      type: string
+                  required: [size]
+                resources:
+                  type: object
+                  default: {}
+                  description: Requests/limits for each PostgreSQL instance pod. Keep memory request == limit (Guaranteed QoS) in production.
+                  properties:
+                    requests:
+                      type: object
+                      default: {}
+                      properties:
+                        cpu:
+                          type: string
+                          default: 500m
+                        memory:
+                          type: string
+                          default: 1Gi
+                    limits:
+                      type: object
+                      default: {}
+                      properties:
+                        cpu:
+                          type: string
+                        memory:
+                          type: string
+                          default: 1Gi
+                postgresql:
+                  type: object
+                  description: PostgreSQL configuration.
+                  properties:
+                    parameters:
+                      type: object
+                      description: postgresql.conf parameters, e.g. max_connections=200, shared_buffers=256MB. Parameters CNPG manages itself are rejected by its webhook.
+                      additionalProperties:
+                        type: string
+                    pgHba:
+                      type: array
+                      description: Extra pg_hba.conf lines, prepended to the CNPG defaults.
+                      items:
+                        type: string
+                    sharedPreloadLibraries:
+                      type: array
+                      items:
+                        type: string
+                database:
+                  type: object
+                  default: {}
+                  description: Application database created at bootstrap (initdb). Its credentials end up in the <name>-app Secret.
+                  properties:
+                    name:
+                      type: string
+                      default: app
+                      x-kubernetes-validations:
+                        - rule: self == oldSelf
+                          message: database.name is immutable
+                    owner:
+                      type: string
+                      default: app
+                      x-kubernetes-validations:
+                        - rule: self == oldSelf
+                          message: database.owner is immutable
+                    encoding:
+                      type: string
+                      default: UTF8
+                    localeCollate:
+                      type: string
+                      default: C
+                    localeCType:
+                      type: string
+                      default: C
+                databases:
+                  type: array
+                  description: Additional databases managed declaratively (postgresql.cnpg.io Database).
+                  maxItems: 32
+                  items:
+                    type: object
+                    required: [name, owner]
+                    properties:
+                      name:
+                        type: string
+                        pattern: '^[a-z_][a-z0-9_]*$'
+                      owner:
+                        type: string
+                        description: Role owning the database. Must exist (bootstrap owner, or one of roles[]).
+                      extensions:
+                        type: array
+                        description: Extensions to ensure present, e.g. [pg_stat_statements, vector].
+                        items:
+                          type: string
+                      reclaimPolicy:
+                        type: string
+                        description: Whether to drop the database in PostgreSQL when it is removed from this list.
+                        enum: [retain, delete]
+                        default: retain
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
+                roles:
+                  type: array
+                  description: Additional PostgreSQL roles managed by CNPG (Cluster.spec.managed.roles).
+                  maxItems: 32
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                        pattern: '^[a-z_][a-z0-9_]*$'
+                      login:
+                        type: boolean
+                        default: true
+                      createdb:
+                        type: boolean
+                        default: false
+                      inRoles:
+                        type: array
+                        description: Roles to grant membership of, e.g. [pg_read_all_data, pg_monitor].
+                        items:
+                          type: string
+                      passwordSecret:
+                        type: string
+                        description: Name of a kubernetes.io/basic-auth Secret (keys username/password) in the same namespace. Without one the role has no password.
+                      connectionLimit:
+                        type: integer
+                        default: -1
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
+                enableSuperuserAccess:
+                  type: boolean
+                  description: Create the <name>-superuser Secret and allow postgres-user logins. Keep off unless needed.
+                  default: false
+                highAvailability:
+                  type: object
+                  default: {}
+                  properties:
+                    podAntiAffinityType:
+                      type: string
+                      description: required = never co-locate two instances on one node (pods stay Pending if nodes run out); preferred = best effort.
+                      enum: [required, preferred]
+                      default: preferred
+                    zoneSpread:
+                      type: boolean
+                      description: Spread instances across topology.kubernetes.io/zone.
+                      default: true
+                    synchronousReplicas:
+                      type: integer
+                      description: Number of synchronous standbys (quorum-based, method any). 0 = asynchronous replication.
+                      minimum: 0
+                      default: 0
+                    synchronousDataDurability:
+                      type: string
+                      description: required = writes block when no synchronous standby is available; preferred = degrade to async instead.
+                      enum: [required, preferred]
+                      default: preferred
+                    primaryUpdateMethod:
+                      type: string
+                      description: How the primary is updated during rolling updates.
+                      enum: [switchover, restart]
+                      default: switchover
+                    primaryUpdateStrategy:
+                      type: string
+                      description: unsupervised = operator switches over automatically; supervised = wait for a manual promote.
+                      enum: [unsupervised, supervised]
+                      default: unsupervised
+                pooler:
+                  type: object
+                  default: {}
+                  description: PgBouncer connection pooler(s) in front of the cluster.
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    instances:
+                      type: integer
+                      minimum: 1
+                      maximum: 10
+                      default: 2
+                    poolMode:
+                      type: string
+                      enum: [session, transaction]
+                      default: transaction
+                    maxClientConn:
+                      type: integer
+                      minimum: 1
+                      default: 1000
+                    defaultPoolSize:
+                      type: integer
+                      minimum: 1
+                      default: 25
+                    readOnly:
+                      type: boolean
+                      description: Also create a pooler for the read-only (standby) service, <name>-pooler-ro.
+                      default: false
+                backup:
+                  type: object
+                  default: {}
+                  description: Continuous WAL archiving + scheduled base backups to S3-compatible object storage via the Barman Cloud plugin (installed by 01-operator).
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    destinationPath:
+                      type: string
+                      description: Object store prefix, e.g. s3://my-bucket/postgres. The cluster name is appended by Barman.
+                      pattern: '^s3://.+'
+                    endpointURL:
+                      type: string
+                      description: S3 endpoint for non-AWS object stores (MinIO, STACKIT, Ceph, ...).
+                    endpointCA:
+                      type: object
+                      description: Secret holding a CA bundle for a self-signed endpoint.
+                      properties:
+                        secretName:
+                          type: string
+                        key:
+                          type: string
+                          default: ca.crt
+                      required: [secretName]
+                    s3Credentials:
+                      type: object
+                      description: Secret in the same namespace with S3 credentials.
+                      properties:
+                        secretName:
+                          type: string
+                        accessKeyIdKey:
+                          type: string
+                          default: ACCESS_KEY_ID
+                        secretAccessKeyKey:
+                          type: string
+                          default: ACCESS_SECRET_KEY
+                        regionKey:
+                          type: string
+                          description: Optional Secret key holding the S3 region.
+                      required: [secretName]
+                    retentionPolicy:
+                      type: string
+                      description: Recovery window to keep, e.g. 30d, 4w.
+                      pattern: '^[1-9][0-9]*[dwm]$'
+                      default: 30d
+                    schedule:
+                      type: string
+                      description: Base backup schedule in CNPG's 6-field cron format (seconds first).
+                      default: "0 0 2 * * *"
+                    compression:
+                      type: string
+                      enum: [gzip, bzip2, snappy, lz4]
+                      default: gzip
+                monitoring:
+                  type: object
+                  default: {}
+                  properties:
+                    enabled:
+                      type: boolean
+                      description: Create PodMonitor(s) so Prometheus scrapes the instance (and pooler) metrics endpoints on port 9187/9127.
+                      default: true
+                    podMonitorLabels:
+                      type: object
+                      description: Extra labels on the PodMonitors/PrometheusRule, to match your Prometheus' selectors (e.g. release=kube-prometheus-stack).
+                      additionalProperties:
+                        type: string
+                    prometheusRule:
+                      type: object
+                      default: {}
+                      properties:
+                        enabled:
+                          type: boolean
+                          description: Create a PrometheusRule with the upstream CloudNativePG alerts scoped to this cluster.
+                          default: true
+                        excludeRules:
+                          type: array
+                          description: Alert names to leave out, e.g. [CNPGClusterZoneSpreadWarning].
+                          items:
+                            type: string
+                    grafanaDashboard:
+                      type: object
+                      default: {}
+                      properties:
+                        enabled:
+                          type: boolean
+                          description: Create a grafana-operator GrafanaDashboard with the CloudNativePG dashboard, preselected on this cluster.
+                          default: true
+                        instanceSelector:
+                          type: object
+                          description: matchLabels selecting the Grafana instance(s). Defaults to dashboards.paas.cncp.nl/scope=<namespace>.
+                          additionalProperties:
+                            type: string
+                        allowCrossNamespaceImport:
+                          type: boolean
+                          description: Allow a Grafana in another namespace to import this dashboard.
+                          default: false
+                        folder:
+                          type: string
+                          default: CloudNativePG
+                        datasourceName:
+                          type: string
+                          description: Name of the Prometheus datasource in Grafana.
+                          default: prometheus
+                expose:
+                  type: object
+                  description: Expose the read-write service outside the cluster as <name>-external.
+                  properties:
+                    type:
+                      type: string
+                      enum: [LoadBalancer]
+                      default: LoadBalancer
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    loadBalancerSourceRanges:
+                      type: array
+                      description: CIDRs allowed to connect. Strongly recommended.
+                      items:
+                        type: string
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                  description: True when every instance is ready.
+                phase:
+                  type: string
+                  description: CNPG Cluster phase, e.g. "Cluster in healthy state".
+                instances:
+                  type: integer
+                readyInstances:
+                  type: integer
+                currentPrimary:
+                  type: string
+                image:
+                  type: string
+                  description: PostgreSQL image currently running.
+                message:
+                  type: string
+                endpoints:
+                  type: object
+                  description: In-cluster DNS names applications connect to (port 5432).
+                  properties:
+                    readWrite:
+                      type: string
+                    readOnly:
+                      type: string
+                    read:
+                      type: string
+                    pooler:
+                      type: string
+                    poolerReadOnly:
+                      type: string
+                secrets:
+                  type: object
+                  description: Secrets (same namespace) holding connection credentials, generated by CNPG.
+                  properties:
+                    app:
+                      type: string
+                    superuser:
+                      type: string
+                backup:
+                  type: object
+                  properties:
+                    lastSuccessfulBackup:
+                      type: string
+                    firstRecoverabilityPoint:
+                      type: string
+                monitoring:
+                  type: object
+                  properties:
+                    dashboardUid:
+                      type: string
+                      description: Grafana dashboard UID for this cluster (link as <grafana>/d/<uid>).

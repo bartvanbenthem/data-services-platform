@@ -1,0 +1,40 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: orders-db
+  namespace: demo
+  annotations:
+    crossplane.io/composition-resource-name: cluster
+status:
+  phase: Cluster in healthy state
+  instances: 3
+  readyInstances: 3
+  currentPrimary: orders-db-1
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: ClusterIsReady
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: orders-db
+  namespace: demo
+  annotations:
+    crossplane.io/composition-resource-name: podmonitor
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: orders-db-alerts
+  namespace: demo
+  annotations:
+    crossplane.io/composition-resource-name: prometheusrule
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: orders-db-cnpg
+  namespace: demo
+  annotations:
+    crossplane.io/composition-resource-name: dashboard

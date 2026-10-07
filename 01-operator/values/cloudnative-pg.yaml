@@ -1,0 +1,43 @@
+# Production overrides for the vendored ../charts/cloudnative-pg chart.
+# Only values that differ from the chart defaults live here; see
+# ../charts/cloudnative-pg/values.yaml for the full, commented list.
+
+# Two replicas with leader election: a node drain or eviction of the
+# operator pod never leaves the webhooks (failurePolicy: Fail) without a
+# backend, which would otherwise block every Cluster create/update.
+replicaCount: 2
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: cloudnative-pg
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+config:
+  # Watch every namespace: the 02-crossplane-api PostgresCluster API is
+  # namespaced and can create Clusters anywhere.
+  clusterWide: true
+
+monitoring:
+  # Operator-level metrics (reconcile counts, webhook latency, ...).
+  # Per-cluster instance metrics are scraped by the PodMonitor that the
+  # PostgresCluster composition creates, not by this one.
+  podMonitorEnabled: true
+  # Add the labels your Prometheus' podMonitorSelector requires, e.g. for
+  # kube-prometheus-stack:
+  # podMonitorAdditionalLabels:
+  #   release: prometheus-operator
+  podMonitorAdditionalLabels: {}
+  # The per-cluster dashboard is shipped as a GrafanaDashboard by the
+  # composition, so the sidecar-style ConfigMap stays off.
+  grafanaDashboard:
+    create: false

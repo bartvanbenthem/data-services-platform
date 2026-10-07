@@ -1,0 +1,56 @@
+# Backstage itself. Build and push the image first:
+#   yarn install --immutable && yarn tsc && yarn build:backend
+#   docker build -t <registry>/cnpg-portal:<tag> -f packages/backend/Dockerfile .
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backstage
+  namespace: backstage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backstage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backstage
+    spec:
+      serviceAccountName: backstage
+      containers:
+        - name: backstage
+          image: registry.example.com/cnpg-portal:latest # replace
+          ports:
+            - name: http
+              containerPort: 7007
+          env:
+            - { name: POSTGRES_HOST, valueFrom: { secretKeyRef: { name: backstage-db-app, key: host } } }
+            - { name: POSTGRES_PORT, valueFrom: { secretKeyRef: { name: backstage-db-app, key: port } } }
+            - { name: POSTGRES_USER, valueFrom: { secretKeyRef: { name: backstage-db-app, key: user } } }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: backstage-db-app, key: password } } }
+            # The app role cannot CREATE DATABASE, so every plugin gets a
+            # schema in the one "backstage" database (app-config.production.yaml).
+            - { name: POSTGRES_DB, valueFrom: { secretKeyRef: { name: backstage-db-app, key: dbname } } }
+            - name: CNPG_GRAFANA_URL
+              value: "" # e.g. https://grafana.example.com
+          readinessProbe:
+            httpGet: { path: /.backstage/health/v1/readiness, port: http }
+          livenessProbe:
+            httpGet: { path: /.backstage/health/v1/liveness, port: http }
+            initialDelaySeconds: 60
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backstage
+  namespace: backstage
+spec:
+  selector:
+    app.kubernetes.io/name: backstage
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

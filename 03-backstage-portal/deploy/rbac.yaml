@@ -1,0 +1,42 @@
+# What the portal's backend may do in the platform cluster: manage
+# PostgresClusters, and read the CNPG Clusters, pods, events and namespaces it
+# shows on the detail page. It never touches CNPG objects directly -- every
+# write goes through the PostgresCluster API (and so through the XRD schema).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backstage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backstage
+  namespace: backstage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backstage-cnpg-portal
+rules:
+  - apiGroups: [cnpg.cncp.nl]
+    resources: [postgresclusters]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [namespaces, pods, events]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backstage-cnpg-portal
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backstage-cnpg-portal
+subjects:
+  - kind: ServiceAccount
+    name: backstage
+    namespace: backstage

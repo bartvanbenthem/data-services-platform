@@ -1,0 +1,169 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: postgres-cluster
+  title: PostgreSQL cluster (CloudNativePG)
+  description: >-
+    Provision a production-ready PostgreSQL cluster on CloudNativePG through the
+    cnpg.cncp.nl PostgresCluster API: HA instances, optional PgBouncer and S3
+    backups, Prometheus metrics, alerts and a Grafana dashboard.
+  tags: [postgresql, cnpg, database]
+spec:
+  owner: group:default/guests
+  type: resource
+
+  parameters:
+    - title: Cluster
+      required: [name, namespace, owner]
+      properties:
+        name:
+          title: Name
+          type: string
+          description: Lowercase letters, digits and "-", max 40 characters.
+          pattern: '^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$'
+          ui:autofocus: true
+        namespace:
+          title: Namespace
+          type: string
+          description: Kubernetes namespace the cluster lives in (must exist).
+          pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+        owner:
+          title: Owner
+          type: string
+          description: Group that owns this database.
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+        system:
+          title: System
+          type: string
+          description: Optional system this database belongs to.
+          ui:field: EntityPicker
+          ui:options:
+            catalogFilter:
+              kind: System
+        postgresVersion:
+          title: PostgreSQL version
+          type: integer
+          enum: [18, 17, 16, 15, 14]
+          default: 17
+        instances:
+          title: Instances
+          type: integer
+          description: 1 primary + hot standbys. Use 3 for production.
+          minimum: 1
+          maximum: 9
+          default: 3
+
+    - title: Sizing
+      properties:
+        storageSize:
+          title: Data volume size
+          type: string
+          default: 10Gi
+          pattern: '^[0-9]+(Mi|Gi|Ti)$'
+        cpu:
+          title: CPU request
+          type: string
+          default: 500m
+        memory:
+          title: Memory (request = limit)
+          type: string
+          default: 1Gi
+        databaseName:
+          title: Database / owner role
+          type: string
+          default: app
+          pattern: '^[a-z_][a-z0-9_]*$'
+
+    - title: Features
+      properties:
+        pooler:
+          title: PgBouncer connection pooler
+          type: boolean
+          default: false
+        monitoring:
+          title: Prometheus metrics, alerts and Grafana dashboard
+          type: boolean
+          default: true
+        backup:
+          title: S3 backups (Barman Cloud)
+          type: boolean
+          default: false
+      dependencies:
+        backup:
+          oneOf:
+            - properties:
+                backup:
+                  const: false
+            - required: [backupDestinationPath, backupSecretName]
+              properties:
+                backup:
+                  const: true
+                backupDestinationPath:
+                  title: Destination
+                  type: string
+                  description: e.g. s3://my-bucket/postgres
+                  pattern: '^s3://.+'
+                backupEndpointURL:
+                  title: Endpoint URL
+                  type: string
+                  description: Leave empty for AWS S3.
+                backupSecretName:
+                  title: Credentials Secret
+                  type: string
+                  description: Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY in the same namespace.
+
+  steps:
+    - id: create
+      name: Create PostgresCluster
+      action: cnpg:postgrescluster:create
+      input:
+        name: ${{ parameters.name }}
+        namespace: ${{ parameters.namespace }}
+        owner: ${{ parameters.owner }}
+        system: ${{ parameters.system }}
+        spec:
+          postgresVersion: ${{ parameters.postgresVersion }}
+          instances: ${{ parameters.instances }}
+          storage:
+            size: ${{ parameters.storageSize }}
+          resources:
+            requests:
+              cpu: ${{ parameters.cpu }}
+              memory: ${{ parameters.memory }}
+            limits:
+              memory: ${{ parameters.memory }}
+          database:
+            name: ${{ parameters.databaseName }}
+            owner: ${{ parameters.databaseName }}
+          pooler:
+            enabled: ${{ parameters.pooler }}
+          monitoring:
+            enabled: ${{ parameters.monitoring }}
+            grafanaDashboard:
+              enabled: ${{ parameters.monitoring }}
+          # Empty optional values are pruned by the action, so a disabled
+          # backup section reaches the API as just {enabled: false}.
+          backup:
+            enabled: ${{ parameters.backup }}
+            destinationPath: ${{ parameters.backupDestinationPath }}
+            endpointURL: ${{ parameters.backupEndpointURL }}
+            s3Credentials:
+              secretName: ${{ parameters.backupSecretName }}
+
+  output:
+    links:
+      - title: Open in the PostgreSQL portal
+        url: ${{ steps['create'].output.portalPath }}
+      - title: Catalog entity (appears within ~30s)
+        icon: catalog
+        entityRef: ${{ steps['create'].output.entityRef }}
+    text:
+      - title: Connecting
+        content: |
+          Applications in the cluster connect to
+          `${{ parameters.name }}-rw.${{ parameters.namespace }}.svc:5432`
+          with the credentials in Secret `${{ parameters.namespace }}/${{ parameters.name }}-app`
+          (key `uri` holds a full connection string).

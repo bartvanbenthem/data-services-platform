@@ -1,0 +1,17 @@
+# Backstage's own PostgreSQL, provisioned through the platform's own API.
+# CNPG writes host/port/user/password/dbname into Secret backstage-db-app,
+# which backstage.yaml maps onto the POSTGRES_* variables.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: backstage-db
+  namespace: backstage
+  labels:
+    backstage.io/owner: guests
+spec:
+  instances: 2
+  storage:
+    size: 5Gi
+  database:
+    name: backstage
+    owner: backstage

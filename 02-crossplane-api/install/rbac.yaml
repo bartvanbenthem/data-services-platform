@@ -1,0 +1,49 @@
+# Crossplane v2 composes the CNPG / Prometheus Operator / grafana-operator
+# objects directly with its own ServiceAccount, so that ServiceAccount needs
+# RBAC for exactly these kinds -- nothing else. The aggregate-to-crossplane
+# label merges this ClusterRole into Crossplane's own ClusterRole
+# (crossplane:aggregate-to-crossplane), no binding needed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane:composed:cnpg-platform
+  labels:
+    rbac.crossplane.io/aggregate-to-crossplane: "true"
+rules:
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters, poolers, scheduledbackups, databases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [barmancloud.cnpg.io]
+    resources: [objectstores]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [monitoring.coreos.com]
+    resources: [podmonitors, prometheusrules]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [grafana.integreatly.org]
+    resources: [grafanadashboards]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+# Lets namespace users manage PostgresClusters through the built-in
+# admin/edit/view roles (e.g. a team's RoleBinding to "edit").
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:postgresclusters:edit
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+  - apiGroups: [cnpg.cncp.nl]
+    resources: [postgresclusters]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:postgresclusters:view
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: [cnpg.cncp.nl]
+    resources: [postgresclusters]
+    verbs: [get, list, watch]
