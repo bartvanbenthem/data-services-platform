@@ -63,6 +63,8 @@ function fakeK8s() {
       throw new NotFoundError(`Project ${name} not found`);
     }),
     applyProject: jest.fn(async (o: any) => ({ ...demoProject, metadata: { name: o.name } })),
+    patch: jest.fn(async () => ordersDb),
+    patchProject: jest.fn(async () => demoProject),
   };
 }
 
@@ -217,6 +219,52 @@ describe('cnpg backend', () => {
     expect(res.status).toBe(404);
   });
 
+  it('patches only the changed fields of a cluster', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    const res = await request(server)
+      .patch('/api/cnpg/clusters/demo/orders-db')
+      .send({ spec: { instances: 5, storage: { size: '50Gi' }, pooler: null }, dryRun: true });
+    expect(res.status).toBe(200);
+    expect(k8s.patch).toHaveBeenCalledWith({
+      namespace: 'demo',
+      name: 'orders-db',
+      spec: { instances: 5, storage: { size: '50Gi' }, pooler: null },
+      labels: undefined,
+      dryRun: true,
+    });
+  });
+
+  it('changes the owner label of a cluster', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    await request(server)
+      .patch('/api/cnpg/clusters/demo/orders-db')
+      .send({ spec: {}, owner: 'team-b' });
+    expect(k8s.patch).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: { 'backstage.io/owner': 'team-b' } }),
+    );
+  });
+
+  it('keeps the project owner label in step with spec.owner', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    const res = await request(server)
+      .patch('/api/cnpg/projects/demo')
+      .send({ spec: { owner: '', quota: null } });
+    expect(res.status).toBe(200);
+    expect(k8s.patchProject).toHaveBeenCalledWith({
+      name: 'demo',
+      spec: { owner: null, quota: null },
+      labels: { 'backstage.io/owner': null },
+      dryRun: undefined,
+    });
+    const bad = await request(server)
+      .patch('/api/cnpg/projects/demo')
+      .send({ spec: { owner: 'not a group!' } });
+    expect(bad.status).toBe(400);
+  });
+
   it('deletes a cluster', async () => {
     const k8s = fakeK8s();
     const server = await start(k8s);
@@ -234,5 +282,8 @@ describe('cnpg backend', () => {
     const created = await request(server).post('/api/cnpg/projects').send({ name: 'team-a' });
     expect(created.status).toBe(403);
     expect(k8s.applyProject).not.toHaveBeenCalled();
+    const patched = await request(server).patch('/api/cnpg/projects/demo').send({ spec: {} });
+    expect(patched.status).toBe(403);
+    expect(k8s.patchProject).not.toHaveBeenCalled();
   });
 });

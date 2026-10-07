@@ -39,6 +39,12 @@ The XR's `status` mirrors CNPG: phase, ready/total instances, current primary, i
 (`-rw`/`-ro`/`-r`/pooler), credential Secret names, last backup and recovery window, and the dashboard
 uid. A `PostgresReady` condition sits next to Crossplane's own `Ready`/`Synced`.
 
+**Changing a live cluster**: everything except `postgresVersion` (forward only, a major upgrade),
+`database` and the storage classes can change in place. The XRD lets volumes (`storage`, `walStorage`)
+grow but not shrink, keeps their `storageClass` fixed, and doesn't let `walStorage` be removed. CNPG grows
+PVCs online when the StorageClass has `allowVolumeExpansion`; CPU/memory changes restart the instances one
+by one, the primary last (switchover).
+
 ## Differences from `cp-controlplane-poc` (v1 style)
 
 - `apiextensions.crossplane.io/v2` XRD with `scope: Namespaced`: no claim/XR pair, users create the
@@ -71,6 +77,7 @@ See [`examples/project.yaml`](examples/project.yaml) for access, quota and obser
 |---|---|---|
 | `Namespace <name>` | always | Labels `platform.cncp.nl/project` and `dashboards.paas.cncp.nl/scope` = `<name>` (the latter is what every PostgresCluster's `GrafanaDashboard` selects by default), `backstage.io/owner`, Pod Security `baseline` |
 | `ServiceAccount` + `Prometheus` + `ClusterRoleBinding platform:project:<name>:prometheus` | `observability.prometheus.enabled` (default) | Scrapes every `PodMonitor`/`PrometheusRule` in the namespace plus kube-prometheus-stack's node/container ServiceMonitors. The binding points at one shared ClusterRole, `cnpg-platform:project-prometheus` |
+| `PersistentVolumeClaim` (the Prometheus volume) | `observability.prometheus.enabled` (default) | Named as the StatefulSet names it, so Prometheus uses it (or Crossplane adopts the one already there). A StatefulSet never resizes its PVCs; composing it makes a larger `storage.size` grow the volume |
 | `Grafana` + `GrafanaDatasource prometheus` | `observability.grafana.enabled` (default) | Anonymous Viewer, embedding allowed (for the portal), ingress from the EnvironmentConfig. The URL ends up in `status.grafana.url` |
 | `RoleBinding` per `access[]` entry | `access` | Binds a Kubernetes group to the built-in `admin`/`edit`/`view` role |
 | `ResourceQuota` + `LimitRange` | `quota` | The LimitRange gives default requests so operator-generated pods pass the quota |
@@ -83,6 +90,9 @@ fail. The XR is `Ready` when the namespace is Active, Prometheus is `Available` 
 `EnvironmentConfig` named `project-defaults`, requested through function-go-templating's
 `ExtraResources`, so no second function is needed. Every key is optional; see
 [`examples/project-defaults.yaml`](examples/project-defaults.yaml).
+
+**Resizing**: `observability.prometheus.storage.size` can grow (the PVC grows online if its
+StorageClass allows expansion) but not shrink, and its `storageClass` is fixed after creation.
 
 **Names**: the Project name is the namespace name. The XRD's CEL rules allow DNS labels up to 40
 characters, without `--` (the portal names catalog entities `<namespace>--<cluster>`), and not `kube-*`,
@@ -105,8 +115,8 @@ exempt (`03-backstage-portal/deploy` sets it on `backstage`, where the portal's 
 ### RBAC
 
 Crossplane gets exactly what the Project composition needs ([`install/rbac.yaml`](install/rbac.yaml)):
-namespaces, ServiceAccounts, quotas, (Cluster)RoleBindings, Prometheuses, Grafanas and
-GrafanaDatasources. To create bindings without holding the bound permissions itself, it gets `bind`
+namespaces, ServiceAccounts, quotas, PersistentVolumeClaims, (Cluster)RoleBindings, Prometheuses,
+Grafanas and GrafanaDatasources. To create bindings without holding the bound permissions itself, it gets `bind`
 on just four ClusterRoles: `admin`, `edit`, `view` and `cnpg-platform:project-prometheus`. Projects are
 cluster-scoped, so the namespace roles don't cover creating them: bind
 `cnpg-platform:projects:admin` to whoever may create projects.

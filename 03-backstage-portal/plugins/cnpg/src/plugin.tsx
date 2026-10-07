@@ -15,6 +15,8 @@ import {
   createClusterRouteRef,
   createProjectRouteRef,
   dashboardsRouteRef,
+  editClusterRouteRef,
+  editProjectRouteRef,
   projectRouteRef,
   projectsRouteRef,
   rootRouteRef,
@@ -67,5 +69,7 @@ export const cnpgPlugin = createFrontendPlugin({
     projects: projectsRouteRef,
     project: projectRouteRef,
     createProject: createProjectRouteRef,
+    editCluster: editClusterRouteRef,
+    editProject: editProjectRouteRef,
   },
 });

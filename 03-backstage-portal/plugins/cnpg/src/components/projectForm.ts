@@ -4,6 +4,9 @@
  * XRD defaults, and the API server has the final say.
  */
 
+import type { Project } from '@internal/backstage-plugin-cnpg-common';
+import { mergePatch, toMi } from './form';
+
 export interface ProjectForm {
   name: string;
   owner: string;
@@ -91,4 +94,73 @@ export function toProjectManifest(f: ProjectForm) {
       ...toProjectSpec(f),
     },
   };
+}
+
+/**
+ * Whether the form's one edit group and one view group can show the
+ * project's access list; otherwise the edit form leaves it alone.
+ */
+export function accessEditable(access: Project['spec']['access']): boolean {
+  const roles = (access ?? []).map(a => a.role);
+  return roles.every(r => r === 'edit' || r === 'view') && new Set(roles).size === roles.length;
+}
+
+/** The form for an existing project (its spec carries the XRD defaults). */
+export function fromProject(project: Project): ProjectForm {
+  const { spec, metadata } = project;
+  const d = defaultProjectForm();
+  const prom = spec.observability?.prometheus ?? {};
+  const group = (role: string) => spec.access?.find(a => a.role === role)?.group ?? '';
+  return {
+    ...d,
+    name: metadata.name,
+    owner: spec.owner ?? '',
+    description: spec.description ?? '',
+    editGroup: group('edit'),
+    viewGroup: group('view'),
+    quotaEnabled: Boolean(spec.quota),
+    quotaCpu: spec.quota?.cpu ?? d.quotaCpu,
+    quotaMemory: spec.quota?.memory ?? d.quotaMemory,
+    quotaStorage: spec.quota?.storage ?? d.quotaStorage,
+    prometheusRetention: prom.retention ?? d.prometheusRetention,
+    prometheusStorage: prom.storage?.size ?? d.prometheusStorage,
+    grafanaIngress: spec.observability?.grafana?.ingress ?? d.grafanaIngress,
+  };
+}
+
+/** The Prometheus volume can only grow (the XRD enforces the same). */
+export function validateProjectEdit(
+  original: ProjectForm,
+  f: ProjectForm,
+): Partial<Record<keyof ProjectForm, string>> {
+  const e = validateProject(f);
+  if (!e.prometheusStorage && toMi(f.prometheusStorage) < toMi(original.prometheusStorage)) {
+    e.prometheusStorage = `Can grow but not shrink (now ${original.prometheusStorage}).`;
+  }
+  return e;
+}
+
+/**
+ * What an edit changes in the Project spec, as a merge patch. An emptied
+ * owner or description becomes null (removed); with `keepAccess` the access
+ * list isn't touched.
+ */
+export function toProjectEditPatch(
+  original: ProjectForm,
+  f: ProjectForm,
+  { keepAccess = false } = {},
+): Record<string, unknown> {
+  const spec = (form: ProjectForm) => {
+    const { access, ...rest } = toProjectSpec(form) as Record<string, unknown>;
+    return {
+      ...(form.owner ? { owner: form.owner } : {}),
+      ...(form.description ? { description: form.description } : {}),
+      ...(keepAccess ? {} : { access: access ?? [] }),
+      ...rest,
+    };
+  };
+  const patch = (mergePatch(spec(original), spec(f)) ?? {}) as Record<string, unknown>;
+  // An empty list reads clearer in the object as "no access entries".
+  if (Array.isArray(patch.access) && patch.access.length === 0) patch.access = null;
+  return patch;
 }

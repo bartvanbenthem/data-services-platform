@@ -4,6 +4,8 @@ import { ClusterListPage } from './ClusterListPage';
 import { CreateClusterPage } from './CreateClusterPage';
 import { CreateProjectPage } from './CreateProjectPage';
 import { DashboardsPage } from './DashboardsPage';
+import { EditClusterPage } from './EditClusterPage';
+import { EditProjectPage } from './EditProjectPage';
 import { ProjectDetailPage } from './ProjectDetailPage';
 import { ProjectListPage } from './ProjectListPage';
 
@@ -17,7 +19,9 @@ export const Router = () => (
     <Route path="/projects" element={<ProjectListPage />} />
     <Route path="/projects/create" element={<CreateProjectPage />} />
     <Route path="/projects/:name" element={<ProjectDetailPage />} />
+    <Route path="/projects/:name/edit" element={<EditProjectPage />} />
     <Route path="/:namespace/:name" element={<ClusterDetailPage tab="overview" />} />
     <Route path="/:namespace/:name/monitoring" element={<ClusterDetailPage tab="monitoring" />} />
+    <Route path="/:namespace/:name/edit" element={<EditClusterPage />} />
   </Routes>
 );

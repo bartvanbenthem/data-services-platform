@@ -38,6 +38,14 @@ export interface CreateProjectRequest {
   dryRun?: boolean;
 }
 
+/** A change to an existing cluster or project. */
+export interface PatchRequest {
+  /** JSON merge patch of the spec: only these fields change, null removes one. */
+  spec: Record<string, unknown>;
+  /** Validate the change (server-side dry run) without applying it. */
+  dryRun?: boolean;
+}
+
 /** Client for the cnpg backend plugin (/api/cnpg). */
 export interface CnpgApi {
   getConfig(): Promise<CnpgPortalConfig>;
@@ -45,10 +53,16 @@ export interface CnpgApi {
   getCluster(namespace: string, name: string): Promise<PostgresClusterDetails>;
   createCluster(request: CreateClusterRequest): Promise<PostgresCluster>;
   updateCluster(namespace: string, name: string, spec: Record<string, unknown>): Promise<PostgresCluster>;
+  patchCluster(
+    namespace: string,
+    name: string,
+    request: PatchRequest & { owner?: string | null },
+  ): Promise<PostgresCluster>;
   deleteCluster(namespace: string, name: string): Promise<void>;
   listProjects(): Promise<ProjectSummary[]>;
   getProject(name: string): Promise<{ summary: ProjectSummary; resource: Project }>;
   createProject(request: CreateProjectRequest): Promise<Project>;
+  patchProject(name: string, request: PatchRequest): Promise<Project>;
 }
 
 export const cnpgApiRef = createApiRef<CnpgApi>().with({
@@ -90,6 +104,13 @@ export class CnpgClient implements CnpgApi {
     });
   }
 
+  patchCluster(namespace: string, name: string, request: PatchRequest & { owner?: string | null }) {
+    return this.#request<PostgresCluster>(`/clusters/${enc(namespace)}/${enc(name)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(request),
+    });
+  }
+
   async deleteCluster(namespace: string, name: string) {
     await this.#request(`/clusters/${enc(namespace)}/${enc(name)}`, { method: 'DELETE' });
   }
@@ -105,6 +126,13 @@ export class CnpgClient implements CnpgApi {
   createProject(request: CreateProjectRequest) {
     return this.#request<Project>('/projects', {
       method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
+  patchProject(name: string, request: PatchRequest) {
+    return this.#request<Project>(`/projects/${enc(name)}`, {
+      method: 'PATCH',
       body: JSON.stringify(request),
     });
   }

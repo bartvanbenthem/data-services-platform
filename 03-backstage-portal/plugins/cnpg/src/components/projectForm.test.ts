@@ -1,4 +1,14 @@
-import { defaultProjectForm, toProjectManifest, toProjectSpec, validateProject } from './projectForm';
+import type { Project } from '@internal/backstage-plugin-cnpg-common';
+import {
+  accessEditable,
+  defaultProjectForm,
+  fromProject,
+  toProjectEditPatch,
+  toProjectManifest,
+  toProjectSpec,
+  validateProject,
+  validateProjectEdit,
+} from './projectForm';
 
 describe('create-project form', () => {
   it('maps the defaults onto observability settings only', () => {
@@ -55,5 +65,60 @@ describe('create-project form', () => {
       prometheusRetention: '7 days',
     });
     expect(Object.keys(errors).sort()).toEqual(['prometheusRetention', 'quotaMemory']);
+  });
+});
+
+const live: Project = {
+  apiVersion: 'platform.cncp.nl/v1alpha1',
+  kind: 'Project',
+  metadata: { name: 'team-a' },
+  spec: {
+    owner: 'team-a',
+    deletionProtection: true,
+    access: [{ group: 'team-a-devs', role: 'edit' }],
+    quota: { cpu: '8', memory: '32Gi', storage: '200Gi' },
+    observability: {
+      prometheus: { enabled: true, retention: '7d', storage: { size: '10Gi' } },
+      grafana: { enabled: true, ingress: true },
+    },
+  },
+};
+
+describe('edit-project form', () => {
+  const original = fromProject(live);
+
+  it('reads an existing project and sends nothing when unchanged', () => {
+    expect(original).toMatchObject({ name: 'team-a', owner: 'team-a', editGroup: 'team-a-devs', quotaEnabled: true });
+    expect(toProjectEditPatch(original, original)).toEqual({});
+  });
+
+  it('grows the Prometheus volume and removes the quota', () => {
+    expect(
+      toProjectEditPatch(original, { ...original, prometheusStorage: '50Gi', quotaEnabled: false }),
+    ).toEqual({ quota: null, observability: { prometheus: { storage: { size: '50Gi' } } } });
+  });
+
+  it('replaces the access list as a whole, or clears it', () => {
+    expect(toProjectEditPatch(original, { ...original, viewGroup: 'auditors' })).toEqual({
+      access: [
+        { group: 'team-a-devs', role: 'edit' },
+        { group: 'auditors', role: 'view' },
+      ],
+    });
+    expect(toProjectEditPatch(original, { ...original, editGroup: '' })).toEqual({ access: null });
+  });
+
+  it("leaves an access list the form can't show alone", () => {
+    const admins = [{ group: 'ops', role: 'admin' as const }];
+    expect(accessEditable(admins)).toBe(false);
+    expect(accessEditable(live.spec.access)).toBe(true);
+    const form = fromProject({ ...live, spec: { ...live.spec, access: admins } });
+    expect(toProjectEditPatch(form, { ...form, owner: '' }, { keepAccess: true })).toEqual({ owner: null });
+  });
+
+  it('refuses to shrink the Prometheus volume', () => {
+    expect(validateProjectEdit(original, { ...original, prometheusStorage: '5Gi' }).prometheusStorage).toMatch(
+      /not shrink/,
+    );
   });
 });

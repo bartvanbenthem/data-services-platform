@@ -10,6 +10,7 @@
 #                                         PrometheusRules, the CNPG operator's
 #                                         PodMonitor + the cluster metrics
 #                                         from kube-prometheus-stack
+#   PersistentVolumeClaim                 the Prometheus volume, so it can grow
 #   Grafana + GrafanaDatasource           what PostgresCluster dashboards import into
 #   RoleBinding per spec.access entry
 #   ResourceQuota + LimitRange            only with spec.quota
@@ -251,6 +252,35 @@ spec:
                       {{- end }}
                 {{- end }}
               {{- end }}
+            ---
+            # The Prometheus StatefulSet's volume, composed so that growing
+            # spec.observability.prometheus.storage.size grows the PVC: a
+            # StatefulSet never resizes the PVCs of its volumeClaimTemplate.
+            # Named as the StatefulSet would name it (prometheus-<prometheus>-db-
+            # prometheus-<prometheus>-0), so it uses this one, or Crossplane
+            # adopts the one it already created. The XRD forbids shrinking.
+            apiVersion: v1
+            kind: PersistentVolumeClaim
+            metadata:
+              name: prometheus-prometheus-db-prometheus-prometheus-0
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "prometheus-pvc" }}
+                # Bound only once the pod is scheduled (WaitForFirstConsumer);
+                # the Prometheus' readiness already covers that.
+                gotemplating.fn.crossplane.io/ready: "True"
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              accessModes: [ReadWriteOnce]
+              {{- with (dig "storage" "storageClass" "" $prom) }}
+              storageClassName: {{ . | quote }}
+              {{- end }}
+              resources:
+                requests:
+                  storage: {{ dig "storage" "size" "10Gi" $prom | quote }}
             {{- end }}
 
             {{- if $grafEnabled }}

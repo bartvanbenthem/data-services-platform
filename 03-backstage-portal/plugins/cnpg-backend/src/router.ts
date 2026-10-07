@@ -18,6 +18,7 @@ import {
   cnpgClusterUpdatePermission,
   cnpgProjectCreatePermission,
   cnpgProjectReadPermission,
+  cnpgProjectUpdatePermission,
   Project,
   PostgresClusterSummary,
   summarize,
@@ -44,6 +45,20 @@ const createSchema = z.object({
 const updateSchema = z.object({
   spec: z.record(z.unknown()),
 });
+
+/**
+ * A JSON merge patch of the spec: only the fields present change, null
+ * removes one. The XRD decides what may change on a live object.
+ */
+const patchSchema = z.object({
+  spec: z.record(z.unknown()),
+  /** New catalog owner; null removes it. */
+  owner: labelValue.nullable().optional(),
+  dryRun: z.boolean().optional(),
+});
+
+const ownerLabel = (owner: string | null | undefined) =>
+  owner === undefined ? undefined : { 'backstage.io/owner': owner || null };
 
 const createProjectSchema = z.object({
   // Also the namespace name; the XRD enforces the same rules.
@@ -165,6 +180,26 @@ export async function createRouter(options: {
     res.status(dryRun ? 200 : 201).json(created);
   });
 
+  router.patch('/projects/:name', async (req, res) => {
+    await authorize(req, cnpgProjectUpdatePermission);
+    const p = z.object({ name }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    const parsed = patchSchema.omit({ owner: true }).safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { spec, dryRun } = parsed.data;
+    // The owner lives in the spec and, for the catalog, in a label; keep both in step.
+    let owner: string | null | undefined;
+    if ('owner' in spec) {
+      const o = labelValue.nullable().safeParse(spec.owner || null);
+      if (!o.success) throw new InputError(`owner: ${o.error.issues[0]?.message}`);
+      owner = o.data;
+      spec.owner = owner;
+    }
+    res.json(
+      await k8s.patchProject({ name: p.data.name, spec, labels: ownerLabel(owner), dryRun }),
+    );
+  });
+
   router.post('/clusters', async (req, res) => {
     await authorize(req, cnpgClusterCreatePermission);
     const parsed = createSchema.safeParse(req.body);
@@ -192,6 +227,15 @@ export async function createRouter(options: {
         labels: owner ? { 'backstage.io/owner': owner } : undefined,
       }),
     );
+  });
+
+  router.patch('/clusters/:namespace/:name', async (req, res) => {
+    await authorize(req, cnpgClusterUpdatePermission);
+    const p = params(req);
+    const parsed = patchSchema.safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { spec, owner, dryRun } = parsed.data;
+    res.json(await k8s.patch({ ...p, spec, labels: ownerLabel(owner), dryRun }));
   });
 
   router.delete('/clusters/:namespace/:name', async (req, res) => {

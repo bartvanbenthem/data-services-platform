@@ -1,11 +1,12 @@
 import { useApi, useRouteRef } from '@backstage/frontend-plugin-api';
-import { Container, Flex, Grid, Header, Switch, TextField } from '@backstage/ui';
+import { Container, Flex, Grid, Header } from '@backstage/ui';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { stringify } from 'yaml';
 import { cnpgApiRef } from '../api';
 import { projectRouteRef } from '../routes';
-import { ManifestPanel, Section } from './common';
+import { ManifestPanel } from './common';
+import { ProjectFormFields } from './ProjectFormFields';
 import {
   defaultProjectForm,
   ProjectForm,
@@ -24,8 +25,8 @@ export const CreateProjectPage = () => {
   const [submitting, setSubmitting] = useState<'validate' | 'create'>();
   const [result, setResult] = useState<{ error?: Error; validated?: boolean }>({});
 
-  const set = <K extends keyof ProjectForm>(key: K) => (value: ProjectForm[K]) => {
-    setForm(f => ({ ...f, [key]: value }));
+  const update = (fn: (f: ProjectForm) => ProjectForm) => {
+    setForm(fn);
     setResult({});
   };
 
@@ -68,106 +69,7 @@ export const CreateProjectPage = () => {
         <Grid.Root columns={{ initial: '1', lg: '3' }} gap="4">
           <Grid.Item colSpan={{ initial: '1', lg: '2' }}>
             <Flex direction="column" gap="4">
-              <Section title="Basics">
-                <TextField
-                  label="Name"
-                  isRequired
-                  value={form.name}
-                  onChange={set('name')}
-                  description={err('name') ?? 'Lowercase letters, digits and single "-", max 40 characters.'}
-                  isInvalid={Boolean(err('name'))}
-                />
-                <TextField
-                  label="Owner (group)"
-                  value={form.owner}
-                  onChange={set('owner')}
-                  description={err('owner') ?? 'Catalog owner of the project and, by default, its databases.'}
-                  isInvalid={Boolean(err('owner'))}
-                />
-                <TextField
-                  label="Description"
-                  value={form.description}
-                  onChange={set('description')}
-                  description={err('description')}
-                  isInvalid={Boolean(err('description'))}
-                />
-              </Section>
-
-              <Section
-                title="Access"
-                description="Kubernetes groups from your identity provider that get access to the project."
-              >
-                <TextField
-                  label="Group with edit access"
-                  value={form.editGroup}
-                  onChange={set('editGroup')}
-                  description='Built-in "edit" role: manage PostgresClusters, read Secrets.'
-                />
-                <TextField
-                  label="Group with view access"
-                  value={form.viewGroup}
-                  onChange={set('viewGroup')}
-                  description='Built-in "view" role.'
-                />
-              </Section>
-
-              <Section title="Quota" description="Caps on what the whole project may request.">
-                <Switch
-                  label="Limit total resources"
-                  isSelected={form.quotaEnabled}
-                  onChange={set('quotaEnabled')}
-                />
-                {form.quotaEnabled && (
-                  <>
-                    <TextField
-                      label="CPU requests"
-                      value={form.quotaCpu}
-                      onChange={set('quotaCpu')}
-                      description={err('quotaCpu')}
-                      isInvalid={Boolean(err('quotaCpu'))}
-                    />
-                    <TextField
-                      label="Memory"
-                      value={form.quotaMemory}
-                      onChange={set('quotaMemory')}
-                      description={err('quotaMemory')}
-                      isInvalid={Boolean(err('quotaMemory'))}
-                    />
-                    <TextField
-                      label="Storage"
-                      value={form.quotaStorage}
-                      onChange={set('quotaStorage')}
-                      description={err('quotaStorage') ?? 'All PVCs together, including Prometheus.'}
-                      isInvalid={Boolean(err('quotaStorage'))}
-                    />
-                  </>
-                )}
-              </Section>
-
-              <Section
-                title="Observability"
-                description="Every PostgreSQL cluster in the project reports to this Prometheus and gets its dashboard in this Grafana."
-              >
-                <TextField
-                  label="Metrics retention"
-                  value={form.prometheusRetention}
-                  onChange={set('prometheusRetention')}
-                  description={err('prometheusRetention')}
-                  isInvalid={Boolean(err('prometheusRetention'))}
-                />
-                <TextField
-                  label="Prometheus volume size"
-                  value={form.prometheusStorage}
-                  onChange={set('prometheusStorage')}
-                  description={err('prometheusStorage')}
-                  isInvalid={Boolean(err('prometheusStorage'))}
-                />
-                <Switch
-                  label="Expose Grafana through the cluster ingress"
-                  isSelected={form.grafanaIngress}
-                  onChange={set('grafanaIngress')}
-                />
-              </Section>
+              <ProjectFormFields form={form} setForm={update} err={err} />
             </Flex>
           </Grid.Item>
 

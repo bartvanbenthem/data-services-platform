@@ -35,7 +35,7 @@ const sections: Array<{ title: string; items: Item[] }> = [
     ],
   },
   {
-    title: 'Observability',
+    title: 'Monitoring',
     items: [
       {
         label: 'Dashboards',

@@ -2,6 +2,7 @@ import { useApi, useRouteRef } from '@backstage/frontend-plugin-api';
 import { usePermission } from '@backstage/plugin-permission-react';
 import {
   Button,
+  ButtonLink,
   Container,
   Dialog,
   DialogBody,
@@ -12,14 +13,22 @@ import {
   Text,
   TextField,
 } from '@backstage/ui';
-import { cnpgClusterDeletePermission } from '@internal/backstage-plugin-cnpg-common';
+import {
+  cnpgClusterDeletePermission,
+  cnpgClusterUpdatePermission,
+} from '@internal/backstage-plugin-cnpg-common';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import useAsync from 'react-use/esm/useAsync';
 import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
-import { clusterMonitoringRouteRef, clusterRouteRef, rootRouteRef } from '../routes';
+import {
+  clusterMonitoringRouteRef,
+  clusterRouteRef,
+  editClusterRouteRef,
+  rootRouteRef,
+} from '../routes';
 import { ClusterDetails, ClusterDetailsSkeleton } from './ClusterDetails';
 import { ErrorAlert, HealthBadge } from './common';
 import { GrafanaDashboard } from './GrafanaDashboard';
@@ -103,7 +112,9 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) =
   const api = useApi(cnpgApiRef);
   const overviewLink = useRouteRef(clusterRouteRef);
   const monitoringLink = useRouteRef(clusterMonitoringRouteRef);
+  const editLink = useRouteRef(editClusterRouteRef);
   const { allowed: canDelete } = usePermission({ permission: cnpgClusterDeletePermission });
+  const { allowed: canUpdate } = usePermission({ permission: cnpgClusterUpdatePermission });
   const [deleting, setDeleting] = useState(false);
   const { value: config } = useAsync(() => api.getConfig(), [api]);
   const { value, error } = useClusterDetails(namespace, name);
@@ -127,6 +138,11 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) =
         customActions={
           <Flex gap="3" align="center">
             {value && <HealthBadge cluster={value.summary} />}
+            {canUpdate && editLink && value && !value.summary.deleting && (
+              <ButtonLink href={editLink(params)} variant="secondary">
+                Edit
+              </ButtonLink>
+            )}
             {canDelete && (
               <Button variant="secondary" destructive onPress={() => setDeleting(true)}>
                 Delete

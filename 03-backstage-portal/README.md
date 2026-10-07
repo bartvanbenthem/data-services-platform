@@ -8,16 +8,18 @@ cluster and Dashboards.
 | Feature | Where |
 |---|---|
 | **PostgreSQL** page (the landing page): summary tiles, then all clusters across namespaces with health, version, instances, primary, pooler/backup flags; filter + search; auto-refresh | `plugins/cnpg` (`/cnpg`) |
-| Cluster detail: status, connection endpoints & credential Secret, storage/HA/pooler/backup/monitoring config, instance pods with roles, conditions, recent events, delete (type-to-confirm) | `/cnpg/:namespace/:name` |
+| Cluster detail: status, connection endpoints & credential Secret, storage/HA/pooler/backup/monitoring config, instance pods with roles, conditions, recent events, **Edit**, delete (type-to-confirm) | `/cnpg/:namespace/:name` |
+| **Edit cluster**: everything that changes in place: volume sizes (grow only), instances, CPU/memory, HA, pooler, backups, monitoring, owner. Name, project, PostgreSQL version, database and StorageClass are read-only. The panel shows the exact change (a merge patch); **Validate** dry-runs it | `/cnpg/:namespace/:name/edit` |
 | **Monitoring** tab: the cluster's CNPG Grafana dashboard (the `GrafanaDashboard` the composition creates), embedded with a time-range picker and an "Open in Grafana" link | `/cnpg/:namespace/:name/monitoring` |
 | **Dashboards** page: every cluster's dashboard, pick a cluster and it is embedded | `/cnpg/dashboards` |
 | **Projects** page: every Project (namespace + Prometheus + Grafana) with health, owner, cluster count and a Grafana link | `/cnpg/projects` |
-| Project detail: namespace, owner, access, quota, deletion protection, Grafana/Prometheus endpoints, the clusters in it, **Create cluster here** | `/cnpg/projects/:name` |
+| Project detail: namespace, owner, access, quota, deletion protection, Grafana/Prometheus endpoints, the clusters in it, **Edit**, **Create cluster here** | `/cnpg/projects/:name` |
+| **Edit project**: owner, description, access groups, quota, metrics retention, Prometheus volume size (grow only), Grafana ingress | `/cnpg/projects/:name/edit` |
 | Create-project form with manifest preview and **Validate** | `/cnpg/projects/create` |
 | Create-cluster form with live manifest preview and **Validate** (server-side dry run against the XRD). The cluster's namespace is picked from the Projects, not typed | `/cnpg/create` |
 | Every Project in the catalog as a `Resource` of type `project` (named after the project, owner from `spec.owner`), and every PostgresCluster as a `Resource` of type `postgres-cluster` (owner/system from the `backstage.io/owner` / `backstage.io/system` labels, `dependsOn` its project, a **PostgreSQL** tab) | `plugins/cnpg-backend` catalog module |
 | Software Templates *Project* (action `cnpg:project:create`) and *PostgreSQL cluster (CloudNativePG)* (action `cnpg:postgrescluster:create`, project picked with an `EntityPicker` on `spec.type: project`) | `templates/` |
-| Permissions `cnpg.cluster.{read,create,update,delete}` and `cnpg.project.{read,create}`; the UI hides create/delete when denied | `plugins/cnpg-common` |
+| Permissions `cnpg.cluster.{read,create,update,delete}` and `cnpg.project.{read,create,update}`; the UI hides create/edit/delete when denied | `plugins/cnpg-common` |
 
 ```
 plugins/cnpg            frontend plugin (pages, entity tab, API client)
@@ -27,9 +29,11 @@ templates/              Software Templates (project, postgres-cluster)
 deploy/                 in-cluster manifests: RBAC, Backstage's own DB (as a PostgresCluster!), Deployment
 ```
 
-The backend writes **only** `PostgresCluster` and `Project` objects, using server-side apply with field
-manager `backstage-cnpg`. Validation stays in one place, the XRD: API server errors such as
-"synchronousReplicas must be lower than instances" are shown in the form as-is.
+The backend writes **only** `PostgresCluster` and `Project` objects with field manager `backstage-cnpg`:
+server-side apply to create them, a JSON merge patch of just the changed fields to edit them (so settings
+made with kubectl stay). Validation stays in one place, the XRD: API server errors such as
+"synchronousReplicas must be lower than instances" or "volumes can grow but not shrink" are shown in the
+form as-is.
 
 ## Run locally
 
@@ -94,7 +98,7 @@ docker build -t <registry>/cnpg-portal:<tag> -f packages/backend/Dockerfile .
 kubectl apply -k deploy/
 ```
 
-`deploy/rbac.yaml` gives the ServiceAccount full access to `postgresclusters`, get/list/create on
+`deploy/rbac.yaml` gives the ServiceAccount full access to `postgresclusters`, get/list/create/patch on
 `projects` (no delete: removing a project removes its databases, which stays a kubectl decision), read
 access to CNPG `clusters`, pods, events and namespaces, and **no** access to Secrets. Backstage's own database is a
 PostgresCluster (`deploy/database.yaml`). Plugins share it per schema (`pluginDivisionMode: schema`),
@@ -102,7 +106,7 @@ because the CNPG app role can't create databases.
 
 Before production: replace the guest auth provider with your IdP
 (<https://backstage.io/docs/auth/>), and replace the allow-all permission policy with one that
-restricts `cnpg.cluster.create`/`delete` and `cnpg.project.create`.
+restricts `cnpg.cluster.create`/`update`/`delete` and `cnpg.project.create`/`update`.
 
 The scaffolder *frontend* isn't bundled (`app.packages.include`), so in the portal you create projects
 and clusters with its own forms. The Software Templates and actions are registered in the backend, for

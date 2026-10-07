@@ -55,6 +55,8 @@ spec:
                   message: backup.destinationPath and backup.s3Credentials are required when backup.enabled is true
                 - rule: "!has(self.highAvailability) || !has(self.highAvailability.synchronousReplicas) || self.highAvailability.synchronousReplicas < self.instances"
                   message: highAvailability.synchronousReplicas must be lower than instances
+                - rule: "!has(oldSelf.walStorage) || has(self.walStorage)"
+                  message: walStorage cannot be removed from an existing cluster
               properties:
                 postgresVersion:
                   type: integer
@@ -78,6 +80,11 @@ spec:
                   type: object
                   default: {}
                   description: PGDATA volume.
+                  x-kubernetes-validations:
+                    - rule: "!has(self.size) || !has(oldSelf.size) || quantity(self.size).compareTo(quantity(oldSelf.size)) >= 0"
+                      message: volumes can grow but not shrink
+                    - rule: "has(self.storageClass) == has(oldSelf.storageClass) && (!has(self.storageClass) || self.storageClass == oldSelf.storageClass)"
+                      message: storageClass cannot be changed after creation
                   properties:
                     size:
                       type: string
@@ -90,6 +97,11 @@ spec:
                 walStorage:
                   type: object
                   description: Separate volume for WAL files. Recommended for production to isolate WAL I/O and avoid PGDATA filling up from WAL.
+                  x-kubernetes-validations:
+                    - rule: "quantity(self.size).compareTo(quantity(oldSelf.size)) >= 0"
+                      message: volumes can grow but not shrink
+                    - rule: "has(self.storageClass) == has(oldSelf.storageClass) && (!has(self.storageClass) || self.storageClass == oldSelf.storageClass)"
+                      message: storageClass cannot be changed after creation
                   properties:
                     size:
                       type: string

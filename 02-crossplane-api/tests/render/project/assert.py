@@ -24,7 +24,7 @@ def check(ok, msg):
 
 # Before the Namespace exists only cluster-scoped objects are rendered.
 OBSERVABILITY = {"namespace", "prometheus-clusterrolebinding", "prometheus-serviceaccount",
-                 "prometheus", "grafana", "grafana-datasource"}
+                 "prometheus", "prometheus-pvc", "grafana", "grafana-datasource"}
 EXPECTED = {
     "bare": {"empty": {"namespace"}},
     "minimal": {"empty": {"namespace", "prometheus-clusterrolebinding"}, "observed": OBSERVABILITY},
@@ -77,6 +77,15 @@ if "prometheus" in composed:
         check(rule_ns == [name, "prometheus-operator-system"], f"default ruleNamespaceSelector {rule_ns}")
         check(prom["serviceMonitorSelector"]["matchLabels"] == {"release": "prometheus-operator"},
               "default serviceMonitorLabels")
+
+if "prometheus-pvc" in composed:
+    # Must be the claim the StatefulSet's volumeClaimTemplate resolves to, or
+    # Prometheus would get a second, unmanaged volume.
+    pvc = composed["prometheus-pvc"]
+    check(pvc["metadata"]["name"] == "prometheus-prometheus-db-prometheus-prometheus-0", "PVC name")
+    vct = composed["prometheus"]["spec"]["storage"]["volumeClaimTemplate"]["spec"]
+    check(pvc["spec"]["resources"] == vct["resources"], "PVC size must match the volumeClaimTemplate")
+    check(pvc["spec"].get("storageClassName") == vct.get("storageClassName"), "PVC storageClass")
 
 if "grafana" in composed:
     graf = composed["grafana"]

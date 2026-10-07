@@ -16,6 +16,7 @@ import {
   CoreV1Api,
   CustomObjectsApi,
   KubeConfig,
+  KubernetesObject,
   KubernetesObjectApi,
   PatchStrategy,
 } from '@kubernetes/client-node';
@@ -180,6 +181,35 @@ export class CnpgKubernetesService {
     return result as unknown as PostgresCluster;
   }
 
+  /**
+   * Changes an existing PostgresCluster with a JSON merge patch: only the
+   * fields in `spec` change (null removes one, so its XRD default applies
+   * again), whoever set the others. The XRD rejects changes the cluster
+   * can't take in place, such as shrinking a volume.
+   */
+  async patch(options: {
+    namespace: string;
+    name: string;
+    spec: Record<string, unknown>;
+    labels?: Record<string, string | null>;
+    dryRun?: boolean;
+  }): Promise<PostgresCluster> {
+    const { namespace, name, spec, labels, dryRun } = options;
+    // A merge patch on a missing object would fail with a less helpful message.
+    await this.get(namespace, name);
+    const body = {
+      apiVersion: `${XR_GROUP}/${XR_VERSION}`,
+      kind: XR_KIND,
+      metadata: { name, namespace, ...(labels ? { labels } : {}) },
+      spec,
+    };
+    const result = await this.#mergePatch(body, dryRun);
+    if (!dryRun) {
+      this.#logger.info(`Patched PostgresCluster ${namespace}/${name}: ${JSON.stringify(spec)}`);
+    }
+    return result as unknown as PostgresCluster;
+  }
+
   async delete(namespace: string, name: string): Promise<void> {
     await this.#call(
       () =>
@@ -275,6 +305,28 @@ export class CnpgKubernetesService {
     return result as unknown as Project;
   }
 
+  /** Changes an existing Project with a JSON merge patch, like {@link patch}. */
+  async patchProject(options: {
+    name: string;
+    spec: Record<string, unknown>;
+    labels?: Record<string, string | null>;
+    dryRun?: boolean;
+  }): Promise<Project> {
+    const { name, spec, labels, dryRun } = options;
+    await this.getProject(name);
+    const body = {
+      apiVersion: `${PROJECT_GROUP}/${PROJECT_VERSION}`,
+      kind: PROJECT_KIND,
+      metadata: { name, ...(labels ? { labels } : {}) },
+      spec,
+    };
+    const result = await this.#mergePatch(body, dryRun);
+    if (!dryRun) {
+      this.#logger.info(`Patched Project ${name}: ${JSON.stringify(spec)}`);
+    }
+    return result as unknown as Project;
+  }
+
   async namespaces(): Promise<string[]> {
     const res = await this.#call(() => this.#core.listNamespace());
     return res.items
@@ -332,6 +384,20 @@ export class CnpgKubernetesService {
       }))
       .sort((a, b) => (b.lastSeen ?? '').localeCompare(a.lastSeen ?? ''))
       .slice(0, 15);
+  }
+
+  /** null label values remove the label, which KubernetesObject's types don't allow for. */
+  #mergePatch(body: object, dryRun?: boolean) {
+    return this.#call(() =>
+      this.#objects.patch(
+        body as KubernetesObject,
+        undefined,
+        dryRun ? 'All' : undefined,
+        FIELD_MANAGER,
+        undefined,
+        PatchStrategy.MergePatch,
+      ),
+    );
   }
 
   /** Maps Kubernetes API errors onto Backstage's error types (and HTTP codes). */

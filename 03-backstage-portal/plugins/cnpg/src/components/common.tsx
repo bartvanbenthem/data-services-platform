@@ -164,8 +164,9 @@ export const Section = ({
 );
 
 /**
- * Right-hand column of the create forms: live manifest preview, Validate
- * (server-side dry run against the XRD) and Create.
+ * Right-hand column of the create and edit forms: live manifest (or patch)
+ * preview, Validate (server-side dry run against the XRD) and Create/Save.
+ * With `unchanged`, there is nothing to send and both buttons are off.
  */
 export const ManifestPanel = ({
   manifest,
@@ -175,6 +176,8 @@ export const ManifestPanel = ({
   submitting,
   onSubmit,
   createLabel,
+  title = 'Manifest',
+  unchanged,
 }: {
   manifest: string;
   hasErrors: boolean;
@@ -183,12 +186,14 @@ export const ManifestPanel = ({
   submitting?: 'validate' | 'create';
   onSubmit: (dryRun: boolean) => void;
   createLabel: string;
+  title?: string;
+  unchanged?: boolean;
 }) => (
   <Flex direction="column" gap="3" style={{ position: 'sticky', top: 16 }}>
     <Card>
       <CardHeader>
         <Text variant="title-x-small" as="h3">
-          Manifest
+          {title}
         </Text>
       </CardHeader>
       <CardBody>
@@ -201,7 +206,7 @@ export const ManifestPanel = ({
             maxHeight: '55vh',
           }}
         >
-          {manifest}
+          {unchanged ? 'No changes yet.' : manifest}
         </pre>
       </CardBody>
     </Card>
@@ -211,14 +216,14 @@ export const ManifestPanel = ({
       <Alert
         status="success"
         title="Valid"
-        description="The API server accepted this manifest (dry run)."
+        description={`The API server accepted ${unchanged === undefined ? 'this manifest' : 'these changes'} (dry run).`}
       />
     )}
     <Flex gap="2" justify="end">
       <Button
         variant="secondary"
         loading={submitting === 'validate'}
-        isDisabled={Boolean(submitting)}
+        isDisabled={Boolean(submitting) || unchanged}
         onPress={() => onSubmit(true)}
       >
         Validate
@@ -226,7 +231,7 @@ export const ManifestPanel = ({
       <Button
         variant="primary"
         loading={submitting === 'create'}
-        isDisabled={Boolean(submitting)}
+        isDisabled={Boolean(submitting) || unchanged}
         onPress={() => onSubmit(false)}
       >
         {createLabel}

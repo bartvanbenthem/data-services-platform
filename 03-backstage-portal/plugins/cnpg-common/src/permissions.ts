@@ -40,6 +40,12 @@ export const cnpgProjectCreatePermission = createPermission({
   attributes: { action: 'create' },
 });
 
+/** Change a Project's owner, access, quota and observability settings. */
+export const cnpgProjectUpdatePermission = createPermission({
+  name: 'cnpg.project.update',
+  attributes: { action: 'update' },
+});
+
 export const cnpgPermissions = [
   cnpgClusterReadPermission,
   cnpgClusterCreatePermission,
@@ -47,4 +53,5 @@ export const cnpgPermissions = [
   cnpgClusterDeletePermission,
   cnpgProjectReadPermission,
   cnpgProjectCreatePermission,
+  cnpgProjectUpdatePermission,
 ];

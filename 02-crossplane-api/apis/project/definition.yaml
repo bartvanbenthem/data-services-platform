@@ -129,6 +129,11 @@ spec:
                         storage:
                           type: object
                           default: {}
+                          x-kubernetes-validations:
+                            - rule: "!has(self.size) || !has(oldSelf.size) || quantity(self.size).compareTo(quantity(oldSelf.size)) >= 0"
+                              message: the Prometheus volume can grow but not shrink
+                            - rule: "has(self.storageClass) == has(oldSelf.storageClass) && (!has(self.storageClass) || self.storageClass == oldSelf.storageClass)"
+                              message: storageClass cannot be changed after creation
                           properties:
                             size:
                               type: string

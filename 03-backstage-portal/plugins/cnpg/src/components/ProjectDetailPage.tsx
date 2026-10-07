@@ -21,6 +21,7 @@ import {
 } from '@backstage/ui';
 import {
   cnpgClusterCreatePermission,
+  cnpgProjectUpdatePermission,
   type PostgresClusterSummary,
   type ProjectSummary,
 } from '@internal/backstage-plugin-cnpg-common';
@@ -29,7 +30,7 @@ import { useParams } from 'react-router-dom';
 import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
-import { clusterRouteRef, createClusterRouteRef } from '../routes';
+import { clusterRouteRef, createClusterRouteRef, editProjectRouteRef } from '../routes';
 import { ErrorAlert, Fields, HealthBadge, Mono, ProjectHealthBadge } from './common';
 
 const Panel = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -114,7 +115,9 @@ export const ProjectDetailPage = () => {
   const { name = '' } = useParams();
   const api = useApi(cnpgApiRef);
   const createClusterLink = useRouteRef(createClusterRouteRef);
+  const editLink = useRouteRef(editProjectRouteRef);
   const { allowed: canCreateCluster } = usePermission({ permission: cnpgClusterCreatePermission });
+  const { allowed: canUpdate } = usePermission({ permission: cnpgProjectUpdatePermission });
 
   const { value, error, retry } = useAsyncRetry(async () => {
     const [project, clusters] = await Promise.all([
@@ -137,6 +140,11 @@ export const ProjectDetailPage = () => {
         customActions={
           <Flex gap="3" align="center">
             {summary && <ProjectHealthBadge project={summary} />}
+            {canUpdate && editLink && summary && !summary.deleting && (
+              <ButtonLink href={editLink({ name })} variant="secondary">
+                Edit
+              </ButtonLink>
+            )}
             {canCreateCluster && createClusterLink && (
               <ButtonLink
                 href={`${createClusterLink()}?project=${encodeURIComponent(name)}`}

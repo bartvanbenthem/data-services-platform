@@ -21,6 +21,12 @@ export const clusterRouteRef = createSubRouteRef({
   path: '/:namespace/:name',
 });
 
+/** /cnpg/:namespace/:name/edit -- change a running cluster. */
+export const editClusterRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/:namespace/:name/edit',
+});
+
 /** /cnpg/:namespace/:name/monitoring -- one cluster's Grafana dashboard. */
 export const clusterMonitoringRouteRef = createSubRouteRef({
   parent: rootRouteRef,
@@ -43,4 +49,10 @@ export const createProjectRouteRef = createSubRouteRef({
 export const projectRouteRef = createSubRouteRef({
   parent: rootRouteRef,
   path: '/projects/:name',
+});
+
+/** /cnpg/projects/:name/edit -- change a project's settings. */
+export const editProjectRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/projects/:name/edit',
 });

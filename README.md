@@ -1,6 +1,6 @@
-# CNPG platform
+# Autonomous data services platform
 
-A self-service PostgreSQL platform on Kubernetes, in three layers. Teams get a **Project** (a
+A data services platform on Kubernetes, in three layers. Teams get a **Project** (a
 namespace with its own Prometheus and Grafana) and create PostgreSQL clusters inside it.
 
 | Folder | What | Built with |
