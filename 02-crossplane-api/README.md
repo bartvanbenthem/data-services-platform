@@ -74,6 +74,21 @@ kubectl get postgrescluster -A
 The Composition is applied with `--server-side`, because the embedded dashboard exceeds the
 client-side `last-applied-configuration` annotation limit.
 
+## Connect from outside the cluster
+
+With `spec.expose` set (as in `examples/minimal.yaml`), the primary is reachable through the
+LoadBalancer Service `<name>-external`. Your client IP must be in `expose.loadBalancerSourceRanges`.
+
+```sh
+LB_IP=$(kubectl -n demo get svc orders-db-external -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+PGPASS=$(kubectl -n demo get secret orders-db-app -o jsonpath='{.data.password}' | base64 -d)
+
+psql "postgresql://app:${PGPASS}@${LB_IP}:5432/app?sslmode=require"
+```
+
+The `uri`/`jdbc-uri` keys in the `<name>-app` Secret point at the in-cluster host
+`<name>-rw.<namespace>.svc`, so don't use them from outside.
+
 ## Develop
 
 ```sh
