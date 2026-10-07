@@ -28,7 +28,7 @@ The backend writes **only** `PostgresCluster` objects, using server-side apply w
 
 ```sh
 yarn install
-CNPG_KUBE_CONTEXT=<context-of-the-platform-cluster> yarn start   # http://localhost:3000 → Enter as guest
+CNPG_KUBE_CONTEXT=$(kubectl config current-context) yarn start   # http://localhost:3000 → Enter as guest
 ```
 
 Without `CNPG_KUBE_CONTEXT` the backend uses your **current** kubeconfig context. Set
