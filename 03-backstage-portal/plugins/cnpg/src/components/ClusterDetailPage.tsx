@@ -2,7 +2,6 @@ import { useApi, useRouteRef } from '@backstage/frontend-plugin-api';
 import { usePermission } from '@backstage/plugin-permission-react';
 import {
   Button,
-  ButtonLink,
   Container,
   Dialog,
   DialogBody,
@@ -20,9 +19,10 @@ import useAsync from 'react-use/esm/useAsync';
 import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
-import { rootRouteRef } from '../routes';
+import { clusterMonitoringRouteRef, clusterRouteRef, rootRouteRef } from '../routes';
 import { ClusterDetails, ClusterDetailsSkeleton } from './ClusterDetails';
-import { ErrorAlert, grafanaLink, HealthBadge } from './common';
+import { ErrorAlert, HealthBadge } from './common';
+import { GrafanaDashboard } from './GrafanaDashboard';
 
 /** Loads (and keeps polling) one cluster; used by the page and the entity tab. */
 export function useClusterDetails(namespace: string, name: string) {
@@ -98,31 +98,35 @@ const DeleteDialog = ({
   );
 };
 
-export const ClusterDetailPage = () => {
+export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' }) => {
   const { namespace = '', name = '' } = useParams();
   const api = useApi(cnpgApiRef);
-  const listLink = useRouteRef(rootRouteRef);
+  const overviewLink = useRouteRef(clusterRouteRef);
+  const monitoringLink = useRouteRef(clusterMonitoringRouteRef);
   const { allowed: canDelete } = usePermission({ permission: cnpgClusterDeletePermission });
   const [deleting, setDeleting] = useState(false);
   const { value: config } = useAsync(() => api.getConfig(), [api]);
   const { value, error } = useClusterDetails(namespace, name);
 
-  const dashboard = grafanaLink(config?.grafanaUrl, value?.resource.status?.monitoring?.dashboardUid);
+  const params = { namespace, name };
+  const tabs =
+    overviewLink && monitoringLink
+      ? [
+          { id: 'overview', label: 'Overview', href: overviewLink(params) },
+          { id: 'monitoring', label: 'Monitoring', href: monitoringLink(params) },
+        ]
+      : undefined;
 
   return (
     <>
       <Header
         title={name}
-        breadcrumbs={listLink ? [{ label: 'PostgreSQL clusters', href: listLink() }] : undefined}
         tags={[{ label: `namespace: ${namespace}` }]}
+        tabs={tabs}
+        activeTabId={tab}
         customActions={
-          <Flex gap="2" align="center">
+          <Flex gap="3" align="center">
             {value && <HealthBadge cluster={value.summary} />}
-            {dashboard && (
-              <ButtonLink href={dashboard} target="_blank" variant="secondary">
-                Grafana dashboard
-              </ButtonLink>
-            )}
             {canDelete && (
               <Button variant="secondary" destructive onPress={() => setDeleting(true)}>
                 Delete
@@ -134,7 +138,15 @@ export const ClusterDetailPage = () => {
       <Container>
         {error && !value && <ErrorAlert error={error} />}
         {!error && !value && <ClusterDetailsSkeleton />}
-        {value && <ClusterDetails details={value} />}
+        {value && tab === 'overview' && <ClusterDetails details={value} />}
+        {value && tab === 'monitoring' && (
+          <GrafanaDashboard
+            grafanaUrl={config?.grafanaUrl}
+            namespace={namespace}
+            name={name}
+            uid={value.summary.dashboardUid}
+          />
+        )}
       </Container>
       <DeleteDialog
         namespace={namespace}

@@ -23,7 +23,7 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import { clusterRouteRef, createClusterRouteRef } from '../routes';
-import { age, ErrorAlert, HealthBadge } from './common';
+import { age, ErrorAlert, health, HealthBadge } from './common';
 
 type Row = PostgresClusterSummary & { id: string };
 
@@ -101,6 +101,26 @@ export const ClusterListPage = () => {
     { id: 'age', label: 'Age', cell: c => <CellText title={age(c.createdAt)} /> },
   ];
 
+  const stats = useMemo(() => {
+    const all = value ?? [];
+    const count = (h: string) => all.filter(c => health(c) === h).length;
+    return [
+      { label: 'Clusters', value: all.length, hint: `${namespaces.length} namespace${namespaces.length === 1 ? '' : 's'}` },
+      { label: 'Healthy', value: count('healthy'), hint: 'Ready in Crossplane and CNPG' },
+      {
+        label: 'Needs attention',
+        value: count('degraded') + count('progressing'),
+        hint: `${count('degraded')} degraded, ${count('progressing')} provisioning`,
+      },
+      {
+        label: 'Instances ready',
+        value: `${all.reduce((n, c) => n + c.readyInstances, 0)}/${all.reduce((n, c) => n + c.instances, 0)}`,
+        hint: 'PostgreSQL pods',
+      },
+      { label: 'With backups', value: all.filter(c => c.backup).length, hint: 'Barman Cloud' },
+    ];
+  }, [value, namespaces]);
+
   const { tableProps } = useTable({
     mode: 'complete',
     data: rows,
@@ -111,7 +131,7 @@ export const ClusterListPage = () => {
     <>
       <Header
         title="PostgreSQL clusters"
-        description="CloudNativePG clusters provisioned through the cnpg.cncp.nl PostgresCluster API"
+        description="CloudNativePG clusters provisioned through the PostgresCluster API"
         customActions={
           canCreate && createLink ? (
             <ButtonLink href={createLink()} variant="primary">
@@ -123,6 +143,15 @@ export const ClusterListPage = () => {
       <Container>
         <Flex direction="column" gap="4">
           {error && <ErrorAlert error={error} />}
+          <div className="kpn-stats">
+            {stats.map(s => (
+              <div key={s.label} className="kpn-stat">
+                <div className="kpn-stat__label">{s.label}</div>
+                <div className="kpn-stat__value">{value ? s.value : '…'}</div>
+                <div className="kpn-stat__hint">{s.hint}</div>
+              </div>
+            ))}
+          </div>
           <Flex gap="3" align="end">
             <Select
               label="Namespace"

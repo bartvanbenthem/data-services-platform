@@ -20,7 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import useAsync from 'react-use/esm/useAsync';
 import { stringify } from 'yaml';
 import { cnpgApiRef } from '../api';
-import { clusterRouteRef, rootRouteRef } from '../routes';
+import { clusterRouteRef } from '../routes';
 import { ErrorAlert } from './common';
 import { ClusterForm, defaultForm, toManifest, toSpec, validate } from './form';
 
@@ -59,7 +59,6 @@ const opts = (values: Array<string | number>) => values.map(v => ({ id: String(v
 export const CreateClusterPage = () => {
   const api = useApi(cnpgApiRef);
   const navigate = useNavigate();
-  const listLink = useRouteRef(rootRouteRef);
   const clusterLink = useRouteRef(clusterRouteRef);
 
   const { value: config } = useAsync(() => api.getConfig(), [api]);
@@ -116,7 +115,6 @@ export const CreateClusterPage = () => {
     <>
       <Header
         title="Create PostgreSQL cluster"
-        breadcrumbs={listLink ? [{ label: 'PostgreSQL clusters', href: listLink() }] : undefined}
       />
       <Container>
         <Grid.Root columns={{ initial: '1', lg: '3' }} gap="4">

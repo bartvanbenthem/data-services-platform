@@ -9,8 +9,20 @@ export const createClusterRouteRef = createSubRouteRef({
   path: '/create',
 });
 
+/** /cnpg/dashboards -- the Grafana dashboards of every cluster. */
+export const dashboardsRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/dashboards',
+});
+
 /** /cnpg/:namespace/:name -- one cluster. */
 export const clusterRouteRef = createSubRouteRef({
   parent: rootRouteRef,
   path: '/:namespace/:name',
+});
+
+/** /cnpg/:namespace/:name/monitoring -- one cluster's Grafana dashboard. */
+export const clusterMonitoringRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/:namespace/:name/monitoring',
 });

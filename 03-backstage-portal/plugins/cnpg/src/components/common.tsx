@@ -27,9 +27,9 @@ export function health(c: PostgresClusterSummary): Health {
 }
 
 const HEALTH: Record<Health, { label: string; color: string }> = {
-  healthy: { label: 'Healthy', color: 'var(--bui-positive-fg, #1f883d)' },
-  progressing: { label: 'Provisioning', color: 'var(--bui-accent-fg, #0969da)' },
-  degraded: { label: 'Degraded', color: 'var(--bui-warning-fg, #9a6700)' },
+  healthy: { label: 'Healthy', color: 'var(--bui-fg-positive, #1f883d)' },
+  progressing: { label: 'Provisioning', color: 'var(--bui-fg-info, #0969da)' },
+  degraded: { label: 'Degraded', color: 'var(--bui-fg-warning, #9a6700)' },
   deleting: { label: 'Deleting', color: 'var(--bui-fg-secondary, #59636e)' },
 };
 
@@ -55,9 +55,36 @@ export function age(timestamp?: string): string {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-export function grafanaLink(grafanaUrl?: string, uid?: string): string | undefined {
+export type TimeRange = '1h' | '6h' | '24h' | '7d';
+
+/**
+ * URL of a cluster's CNPG dashboard. `grafanaUrl` may contain "{namespace}"
+ * for setups with one Grafana per namespace. With `embed`, Grafana's chrome is
+ * hidden (kiosk) and the dark theme matches the portal.
+ */
+export function grafanaLink(
+  grafanaUrl: string | undefined,
+  uid: string | undefined,
+  opts: { namespace?: string; cluster?: string; embed?: boolean; range?: TimeRange } = {},
+): string | undefined {
   if (!grafanaUrl || !uid) return undefined;
-  return `${grafanaUrl.replace(/\/$/, '')}/d/${uid}`;
+  const base = grafanaUrl.replace(/\{namespace\}/g, opts.namespace ?? '').replace(/\/$/, '');
+  const params = new URLSearchParams();
+  if (opts.namespace) params.set('var-namespace', opts.namespace);
+  if (opts.cluster) params.set('var-cluster', opts.cluster);
+  if (opts.range) {
+    params.set('from', `now-${opts.range}`);
+    params.set('to', 'now');
+  }
+  if (opts.embed) {
+    params.set('theme', 'dark');
+    params.set('refresh', '30s');
+  }
+  // Bare flags: kiosk hides Grafana's chrome; the _dash.* flags (Grafana 11.3+)
+  // hide the time picker and variables, which the portal already controls.
+  const flags = opts.embed ? '&kiosk&_dash.hideTimePicker&_dash.hideVariables&_dash.hideLinks' : '';
+  const query = params.toString() + flags;
+  return `${base}/d/${encodeURIComponent(uid)}${query ? `?${query.replace(/^&/, '')}` : ''}`;
 }
 
 export const ErrorAlert = ({ error }: { error: Error }) => (

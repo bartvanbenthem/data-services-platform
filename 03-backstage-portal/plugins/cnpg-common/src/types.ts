@@ -69,6 +69,8 @@ export interface PostgresClusterSummary {
   owner?: string;
   pooler: boolean;
   backup: boolean;
+  /** uid of the composed GrafanaDashboard; unset when the dashboard is disabled. */
+  dashboardUid?: string;
   createdAt?: string;
 }
 
@@ -125,6 +127,7 @@ export function summarize(cluster: PostgresCluster): PostgresClusterSummary {
     owner: metadata.labels?.['backstage.io/owner'],
     pooler: Boolean(spec.pooler?.enabled),
     backup: Boolean(spec.backup?.enabled),
+    dashboardUid: status?.monitoring?.dashboardUid || undefined,
     createdAt: metadata.creationTimestamp,
   };
 }

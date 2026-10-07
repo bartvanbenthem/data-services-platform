@@ -16,18 +16,15 @@
 
 import { test, expect } from '@playwright/test';
 
-test('App should render the welcome page', async ({ page }) => {
+test('App signs in and lands on the PostgreSQL clusters', async ({ page }) => {
   await page.goto('/');
 
   const enterButton = page.getByRole('button', { name: 'Enter' });
   await expect(enterButton).toBeVisible();
   await enterButton.click();
 
+  await expect(page).toHaveURL(/\/cnpg$/);
   const nav = page.getByRole('navigation', { name: 'sidebar nav' });
-  await expect(
-    nav.getByRole('link', { name: 'Catalog', exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole('link', { name: 'APIs', exact: true }),
-  ).toBeVisible();
+  await expect(nav.getByRole('link', { name: 'PostgreSQL', exact: true })).toBeVisible();
+  await expect(nav.getByRole('link', { name: 'Dashboards', exact: true })).toBeVisible();
 });

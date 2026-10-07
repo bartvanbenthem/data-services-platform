@@ -10,7 +10,8 @@ export interface Config {
       context?: string;
     };
     /**
-     * Grafana base URL; with it the portal links each cluster's dashboard.
+     * Grafana base URL; with it the portal embeds and links each cluster's
+     * CNPG dashboard. "{namespace}" is replaced by the cluster's namespace.
      * @visibility frontend
      */
     grafanaUrl?: string;

@@ -1,6 +1,6 @@
 import { renderInTestApp, mockApis } from '@backstage/frontend-test-utils';
 import { permissionApiRef } from '@backstage/plugin-permission-react';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import type { PostgresClusterSummary } from '@internal/backstage-plugin-cnpg-common';
 import { CnpgApi, cnpgApiRef } from '../api';
 import { rootRouteRef } from '../routes';
@@ -40,9 +40,13 @@ describe('ClusterListPage', () => {
 
     expect(await screen.findByText('orders-db')).toBeInTheDocument();
     expect(screen.getByText('payments-db')).toBeInTheDocument();
-    expect(screen.getByText('Healthy')).toBeInTheDocument();
-    expect(screen.getByText('Degraded')).toBeInTheDocument();
-    expect(screen.getByText('1/3')).toBeInTheDocument();
+    const table = within(screen.getByRole('grid'));
+    expect(table.getByText('Healthy')).toBeInTheDocument();
+    expect(table.getByText('Degraded')).toBeInTheDocument();
+    expect(table.getByText('1/3')).toBeInTheDocument();
+    // summary tiles: 2 clusters, 1 healthy, 4/6 instances ready
+    expect(screen.getByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText('4/6')).toBeInTheDocument();
     expect(screen.getByText('pooler')).toBeInTheDocument();
     expect(screen.getByText('pooler, backups')).toBeInTheDocument();
     expect(screen.getByText('Create cluster')).toBeInTheDocument();

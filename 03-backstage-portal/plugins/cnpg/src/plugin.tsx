@@ -9,7 +9,13 @@ import { EntityContentBlueprint } from '@backstage/plugin-catalog-react/alpha';
 import { CNPG_ANNOTATION } from '@internal/backstage-plugin-cnpg-common';
 import { cnpgApiRef, CnpgClient } from './api';
 import { PostgresIcon } from './components/common';
-import { clusterRouteRef, createClusterRouteRef, rootRouteRef } from './routes';
+import {
+  clusterMonitoringRouteRef,
+  clusterRouteRef,
+  createClusterRouteRef,
+  dashboardsRouteRef,
+  rootRouteRef,
+} from './routes';
 
 export const cnpgApi = ApiBlueprint.make({
   params: defineParams =>
@@ -53,5 +59,7 @@ export const cnpgPlugin = createFrontendPlugin({
     root: rootRouteRef,
     cluster: clusterRouteRef,
     create: createClusterRouteRef,
+    dashboards: dashboardsRouteRef,
+    clusterMonitoring: clusterMonitoringRouteRef,
   },
 });

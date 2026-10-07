@@ -1,0 +1,345 @@
+/*
+ * KPN look for the portal: dark, quiet surfaces with KPN green as the only
+ * accent. Overrides Backstage UI (BUI) tokens under the theme name set by
+ * kpnTheme.tsx; unlayered rules win over BUI's @layer tokens.
+ */
+body[data-theme-name='kpn'] {
+  --kpn-green: #00c300;
+  --kpn-green-hover: #2fd62f;
+
+  --bui-font-regular: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto,
+    sans-serif;
+
+  --bui-bg-app: #0e0f13;
+  --bui-bg-neutral-1: #16181f;
+  --bui-bg-neutral-1-hover: #1b1e26;
+  --bui-bg-neutral-1-pressed: #20232c;
+  --bui-bg-neutral-1-disabled: #16181f;
+  --bui-bg-neutral-2: #1d2029;
+  --bui-bg-neutral-2-hover: #232733;
+  --bui-bg-neutral-2-pressed: #292d3a;
+  --bui-bg-neutral-2-disabled: #1d2029;
+  --bui-bg-neutral-3: #252935;
+  --bui-bg-neutral-3-hover: #2b303d;
+  --bui-bg-neutral-3-pressed: #313645;
+  --bui-bg-neutral-3-disabled: #252935;
+  --bui-bg-neutral-4: #2d3240;
+  --bui-bg-neutral-4-hover: #343a4a;
+  --bui-bg-neutral-4-pressed: #3b4253;
+  --bui-bg-neutral-4-disabled: #2d3240;
+
+  --bui-fg-primary: #e9ebf0;
+  --bui-fg-secondary: #9197a6;
+  --bui-fg-disabled: #5d6372;
+
+  --bui-border-1: #262934;
+  --bui-border-2: #323644;
+
+  --bui-ring: var(--kpn-green);
+  --bui-accent-bg: var(--kpn-green);
+  --bui-accent-bg-hover: var(--kpn-green-hover);
+  --bui-accent-bg-disabled: #1e4d1e;
+  --bui-accent-fg: #03140a;
+  --bui-accent-fg-disabled: #5f8f5f;
+  --bui-bg-solid: var(--kpn-green);
+  --bui-bg-solid-hover: var(--kpn-green-hover);
+  --bui-bg-solid-pressed: #00a800;
+  --bui-fg-solid: #03140a;
+
+  --bui-positive-bg: var(--kpn-green);
+  --bui-positive-fg-subdued: #6fe46f;
+  --bui-fg-positive: #3ddc3d;
+  --bui-fg-negative: #ff5c6c;
+  --bui-fg-warning: #ffa733;
+
+  --bui-radius-2: 6px;
+  --bui-radius-3: 10px;
+
+  background: var(--bui-bg-app);
+  color: var(--bui-fg-primary);
+}
+
+/* The sign-in page (no app shell yet) brings its own logo; drop the MUI banner. */
+body:not(:has(.kpn-shell)) header[class*='BackstageHeader-header'] {
+  display: none;
+}
+
+body:not(:has(.kpn-shell)) main article {
+  padding-top: 18vh;
+}
+
+/* ---- shell ---------------------------------------------------------- */
+
+.kpn-shell {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--bui-bg-app);
+}
+
+.kpn-shell__main {
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 12px 20px 32px;
+}
+
+/* ---- sidebar -------------------------------------------------------- */
+
+.kpn-nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 22px 12px 16px;
+  background: var(--bui-bg-neutral-1);
+  border-right: 1px solid var(--bui-border-1);
+  font-family: var(--bui-font-regular);
+}
+
+.kpn-nav__brand {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.kpn-nav__brand svg {
+  align-self: flex-start;
+}
+
+.kpn-nav__product {
+  color: var(--bui-fg-secondary);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.kpn-nav__sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.kpn-nav__section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kpn-nav__heading {
+  padding: 0 10px 6px;
+  color: var(--bui-fg-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.kpn-nav__item {
+  position: relative;
+  padding: 7px 10px 7px 14px;
+  border-radius: 6px;
+  color: #c3c8d4;
+  font-size: 13.5px;
+  text-decoration: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.kpn-nav__item:hover {
+  background: var(--bui-bg-neutral-2);
+  color: var(--bui-fg-primary);
+}
+
+.kpn-nav__item[aria-current='page'] {
+  background: #1c2a1f;
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.kpn-nav__item[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--kpn-green);
+}
+
+.kpn-nav__item:focus-visible {
+  outline: 2px solid var(--kpn-green);
+  outline-offset: 1px;
+}
+
+.kpn-nav__footer {
+  padding: 0 10px;
+  color: var(--bui-fg-disabled);
+  font-size: 11px;
+}
+
+/* Narrow screens: the sidebar becomes a compact top bar. */
+@media (max-width: 760px) {
+  .kpn-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kpn-shell__main {
+    height: auto;
+    overflow: visible;
+    padding: 8px 12px 24px;
+  }
+  .kpn-nav {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--bui-border-1);
+    overflow-x: auto;
+  }
+  .kpn-nav__product,
+  .kpn-nav__heading,
+  .kpn-nav__footer {
+    display: none;
+  }
+  .kpn-nav__sections,
+  .kpn-nav__section {
+    flex-direction: row;
+    gap: 4px;
+    overflow: visible;
+  }
+  .kpn-nav__item {
+    white-space: nowrap;
+  }
+}
+
+/* ---- shared portal components (plugins/cnpg) ------------------------ */
+
+.kpn-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.kpn-stat {
+  padding: 14px 16px;
+  border: 1px solid var(--bui-border-1);
+  border-radius: 10px;
+  background: var(--bui-bg-neutral-1);
+}
+
+.kpn-stat__label {
+  color: var(--bui-fg-secondary);
+  font-size: 12.5px;
+}
+
+.kpn-stat__value {
+  margin-top: 6px;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpn-stat__hint {
+  margin-top: 4px;
+  color: var(--bui-fg-secondary);
+  font-size: 12px;
+}
+
+.kpn-grafana {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bui-border-1);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #111217; /* Grafana's own dark background, avoids a flash */
+}
+
+.kpn-grafana__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bui-border-1);
+  background: var(--bui-bg-neutral-1);
+}
+
+.kpn-grafana__frame {
+  display: block;
+  width: 100%;
+  border: 0;
+}
+
+.kpn-segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--bui-border-1);
+  border-radius: 7px;
+  background: var(--bui-bg-app);
+}
+
+.kpn-segmented button {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--bui-fg-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.kpn-segmented button:hover {
+  color: var(--bui-fg-primary);
+}
+
+.kpn-segmented button[aria-pressed='true'] {
+  background: var(--bui-bg-neutral-3);
+  color: var(--bui-fg-primary);
+}
+
+.kpn-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kpn-picker button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bui-fg-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kpn-picker button:hover {
+  background: var(--bui-bg-neutral-2);
+}
+
+.kpn-picker button[aria-pressed='true'] {
+  background: #1c2a1f;
+}
+
+.kpn-picker small {
+  margin-left: auto;
+  color: var(--bui-fg-secondary);
+}
