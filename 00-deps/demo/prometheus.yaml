@@ -53,6 +53,15 @@ spec:
   resources:
     requests: {cpu: 100m, memory: 512Mi}
     limits: {memory: 2Gi}
+  # Without fsGroup the PVC stays root-owned and Prometheus (non-root) crashes
+  # on "open /prometheus/queries.active: permission denied".
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 2000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
   storage:
     volumeClaimTemplate:
       spec:
@@ -62,7 +71,15 @@ spec:
             storage: 10Gi
   # Empty selector with no namespace selector = every object in "demo" only.
   podMonitorSelector: {}
+  # Rules from "demo" (the CNPG alerts) and from kube-prometheus-stack, whose
+  # recording rules (node_namespace_pod_container:..._sum_irate) the CNPG
+  # dashboard's CPU panels query.
   ruleSelector: {}
+  ruleNamespaceSelector:
+    matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: In
+        values: [demo, prometheus-operator-system]
   # Only the node/container ServiceMonitors from kube-prometheus-stack, not
   # the control-plane ones (apiserver, etcd, scheduler, ...).
   serviceMonitorNamespaceSelector:
