@@ -30,10 +30,10 @@ import { parseKubeconfig } from './kubeconfig';
 
 const KUBECONFIG_KEY = 'kubeconfig';
 const OWNER_LABEL = 'backstage.io/owner';
-/** The Location API (02-crossplane-api/apis/location), cluster-scoped. */
+/** The Location API (crossplane-api/apis/location), cluster-scoped. */
 const LOCATION_API = { group: 'platform.cncp.nl', version: 'v1alpha1', plural: 'locations' };
 const API_MISSING =
-  'The Location API (locations.platform.cncp.nl) is not installed; run 02-crossplane-api/install/install.sh';
+  'The Location API (locations.platform.cncp.nl) is not installed; run crossplane-api/install/install.sh';
 
 interface LocationResource {
   apiVersion?: string;
@@ -163,7 +163,7 @@ export async function probe(kubeconfig: string): Promise<LocationHealth> {
 
 /**
  * Locations (Kubernetes clusters the platform can use): a Location object
- * (02-crossplane-api/apis/location) holding the settings, and the kubeconfig
+ * (crossplane-api/apis/location) holding the settings, and the kubeconfig
  * as a Secret in one namespace of the platform cluster, which the Location
  * references. Crossplane composes the rest (the ClusterProviderConfig, the
  * Prometheus ClusterRole in the location) and reports in the Location's

@@ -2,7 +2,7 @@
 # End-to-end test on two throwaway kind clusters: a control plane (Crossplane,
 # the APIs, each Project's Grafana and the Prometheus that receives its
 # metrics; no CloudNativePG) and one location the databases run in. Installs
-# the prerequisites (00-deps), 01-operator and 02-crossplane-api as
+# the prerequisites (deps), operator and crossplane-api as
 # documented, creates a Project (namespaces, Prometheus, Grafana) with that
 # location as its protected site and a PostgresCluster in it, and checks that
 # the database is healthy, its metrics reach the location's Prometheus and,
@@ -75,7 +75,7 @@ wait_for() { # <description> <tries> <command...>: retry every 10s
   echo "FAIL: ${what}"; return 1
 }
 
-kube_prometheus_stack() { # <kubeconfig>: same flags as 00-deps/README.md
+kube_prometheus_stack() { # <kubeconfig>: same flags as deps/README.md
   helm upgrade -i prometheus-operator kube-prometheus-stack --kubeconfig "$1" \
     --repo https://prometheus-community.github.io/helm-charts \
     --version "${KUBE_PROMETHEUS_STACK_VERSION}" -n prometheus-operator-system --create-namespace \
@@ -83,7 +83,7 @@ kube_prometheus_stack() { # <kubeconfig>: same flags as 00-deps/README.md
     --wait --timeout 10m >/dev/null
 }
 
-echo "==> control plane (00-deps): Prometheus Operator, grafana-operator, HAProxy Ingress"
+echo "==> control plane (deps): Prometheus Operator, grafana-operator, HAProxy Ingress"
 kube_prometheus_stack "${CP_KUBECONFIG}"
 helm upgrade -i grafana-operator grafana-operator --kubeconfig "${CP_KUBECONFIG}" \
   --repo https://grafana.github.io/helm-charts \
@@ -98,19 +98,19 @@ helm upgrade -i haproxy-ingress kubernetes-ingress --kubeconfig "${CP_KUBECONFIG
   --set controller.kind=DaemonSet --set controller.daemonset.useHostPort=true \
   --wait --timeout 5m >/dev/null
 
-echo "==> location (00-deps + 01-operator): cert-manager, Prometheus Operator, CloudNativePG"
+echo "==> location (deps + operator): cert-manager, Prometheus Operator, CloudNativePG"
 "${L[@]}" apply --server-side -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml" >/dev/null
 kube_prometheus_stack "${LOC_KUBECONFIG}"
 "${L[@]}" -n cert-manager wait deploy --all --for=condition=Available --timeout=300s
-KUBECONFIG="${LOC_KUBECONFIG}" "${ROOT}/01-operator/install.sh"
+KUBECONFIG="${LOC_KUBECONFIG}" "${ROOT}/operator/install.sh"
 
-echo "==> 02-crossplane-api on the control plane"
-KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/02-crossplane-api/install/install.sh"
+echo "==> crossplane-api on the control plane"
+KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/crossplane-api/install/install.sh"
 
 echo "==> register the location"
 kind get kubeconfig --internal --name "${LOC}" \
   | sed "s#https://${LOC}-control-plane:6443#https://$(node_ip "${LOC}"):6443#" >"${WORK}/loc-internal.kubeconfig"
-KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/02-crossplane-api/install/add-location.sh" "${LOCATION}" "${WORK}/loc-internal.kubeconfig"
+KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/crossplane-api/install/add-location.sh" "${LOCATION}" "${WORK}/loc-internal.kubeconfig"
 if ! "${C[@]}" wait location/${LOCATION} --for=condition=Ready --timeout=300s; then
   "${C[@]}" get location ${LOCATION} -o yaml; exit 1
 fi

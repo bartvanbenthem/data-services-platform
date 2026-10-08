@@ -64,7 +64,7 @@ expected = {
                                    message="Creating the ClusterProviderConfig"),
     ("minimal", "observed"): dict(ready=False, connected=True, providerConfig=name,
                                   operators={"cloudnativepg": True, "prometheusOperator": False},
-                                  message="Connected; the Prometheus Operator CRDs not installed (run 01-operator/install.sh against it)"),
+                                  message="Connected; the Prometheus Operator CRDs not installed (run operator/install.sh against it)"),
     ("ready", "empty"): dict(ready=False, connected=False, providerConfig=None, operators=None,
                              message="Creating the ClusterProviderConfig"),
     ("ready", "observed"): dict(ready=True, connected=True, providerConfig=name,

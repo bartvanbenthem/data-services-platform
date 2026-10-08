@@ -159,7 +159,7 @@ spec:
             {{- if not $pc }}{{ $msg = "Creating the ClusterProviderConfig" }}
             {{- else if not $role }}{{ $msg = "Connecting" }}
             {{- else if not $connected }}{{ $msg = printf "Can't reach the cluster: %s" ($synced.message | default "waiting for provider-kubernetes") }}
-            {{- else if $missing }}{{ $msg = printf "Connected; %s not installed (run 01-operator/install.sh against it)" (join " and " $missing) }}
+            {{- else if $missing }}{{ $msg = printf "Connected; %s not installed (run operator/install.sh against it)" (join " and " $missing) }}
             {{- end }}
             ---
             apiVersion: platform.cncp.nl/v1alpha1

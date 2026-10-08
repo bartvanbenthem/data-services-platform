@@ -1,8 +1,8 @@
 # Dependencies
 
 Everything the platform needs before
-[`01-operator/`](../01-operator/) and
-[`02-crossplane-api/`](../02-crossplane-api/) are installed, plus the
+[`operator/`](../operator/) and
+[`crossplane-api/`](../crossplane-api/) are installed, plus the
 `demo` Project (a namespace with its own Prometheus and Grafana). The
 platform has a **control plane** (Crossplane, the APIs, the portal, each
 Project's Grafana; no databases) and **locations**, the clusters the
@@ -94,14 +94,14 @@ MetalLB isn't needed.
 kubectl get svc -n haproxy-ingress   # EXTERNAL-IP is where ingress hosts must resolve to
 ```
 
-## 5. The `demo` Project (after 02-crossplane-api)
+## 5. The `demo` Project (after crossplane-api)
 
 A namespace with its own Prometheus and Grafana is a **Project**
 (`platform.cncp.nl/v1alpha1`, see
-[`02-crossplane-api`](../02-crossplane-api/README.md#the-project-api)), so
-this step runs on the control plane *after* `02-crossplane-api/install/install.sh`
+[`crossplane-api`](../crossplane-api/README.md#the-project-api)), so
+this step runs on the control plane *after* `crossplane-api/install/install.sh`
 and after registering the location the demo databases run in
-(`02-crossplane-api/install/add-location.sh`, with `01-operator/install.sh`
+(`crossplane-api/install/add-location.sh`, with `operator/install.sh`
 run against that location first). `demo/project.yaml` names it
 `si-ske-demo`: change that to your location's name.
 

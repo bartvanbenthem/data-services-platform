@@ -1,6 +1,6 @@
 /**
  * Shapes of the cnpg.cncp.nl/v1alpha1 PostgresCluster API served by
- * 02-crossplane-api. The XRD is the source of truth (and the API server
+ * crossplane-api. The XRD is the source of truth (and the API server
  * validates every write against it); these types only cover what the portal
  * reads or sends.
  */

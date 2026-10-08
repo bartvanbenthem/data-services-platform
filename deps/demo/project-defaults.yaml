@@ -1,5 +1,5 @@
 # Cluster-wide Project settings for this cluster (see
-# ../../02-crossplane-api/examples/project-defaults.yaml for every key).
+# ../../crossplane-api/examples/project-defaults.yaml for every key).
 apiVersion: apiextensions.crossplane.io/v1beta1
 kind: EnvironmentConfig
 metadata:

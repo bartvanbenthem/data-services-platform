@@ -1,4 +1,4 @@
-# 01-operator: CloudNativePG operator
+# operator: CloudNativePG operator
 
 Installs the operator layer **from this repository only**. Charts are vendored into `charts/`,
 so an install is reproducible and reviewable, and does not depend on a remote Helm repo.
@@ -27,7 +27,7 @@ Production choices in `values/cloudnative-pg.yaml`:
   evicted pod would otherwise block every Cluster change.
 - Requests and limits are set, and cluster-wide watch is on.
 - An operator PodMonitor is created. Per-database metrics come from the PodMonitor that
-  `02-crossplane-api` creates.
+  `crossplane-api` creates.
 
 ## Bumping versions
 

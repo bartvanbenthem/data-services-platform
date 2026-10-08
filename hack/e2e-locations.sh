@@ -93,16 +93,16 @@ wait_for() { # <description> <tries> <command...>: retry every 10s
   echo "FAIL: ${what}"; return 1
 }
 
-echo "==> cert-manager, Prometheus Operator CRDs (no operator) + 01-operator in both locations"
+echo "==> cert-manager, Prometheus Operator CRDs (no operator) + operator in both locations"
 for kc in "${PROT_KUBECONFIG}" "${REC_KUBECONFIG}"; do
   kubectl --kubeconfig "${kc}" apply --server-side \
     -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml" >/dev/null
   # The CNPG chart ships a PodMonitor for the operator.
-  for crd in "${ROOT}"/02-crossplane-api/tests/crds/monitoring.coreos.com_*.yaml; do
+  for crd in "${ROOT}"/crossplane-api/tests/crds/monitoring.coreos.com_*.yaml; do
     kubectl --kubeconfig "${kc}" apply --server-side -f "${crd}" >/dev/null
   done
   kubectl --kubeconfig "${kc}" -n cert-manager wait deploy --all --for=condition=Available --timeout=300s
-  KUBECONFIG="${kc}" "${ROOT}/01-operator/install.sh"
+  KUBECONFIG="${kc}" "${ROOT}/operator/install.sh"
 done
 
 echo "==> MinIO on the control plane (NodePort 30900, reachable from both locations)"
@@ -160,8 +160,8 @@ S3_ENDPOINT="http://$(node_ip "${CP}"):30900"
   sh -c "mc alias set e2e http://minio.minio.svc:9000 e2e-access e2e-secret-key && mc mb --ignore-existing e2e/pg-backups"
 "${C[@]}" -n minio wait job/mkbucket --for=condition=Complete --timeout=180s
 
-echo "==> 02-crossplane-api on the control plane"
-KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/02-crossplane-api/install/install.sh"
+echo "==> crossplane-api on the control plane"
+KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/crossplane-api/install/install.sh"
 if "${C[@]}" get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
   echo "FAIL: the control plane has CloudNativePG; this test must show it doesn't need it"; exit 1
 fi
@@ -173,7 +173,7 @@ for loc in "${PROTECTED}:${PROT}" "${RECOVERY}:${REC}"; do
   # plane can reach.
   kind get kubeconfig --internal --name "${cluster}" \
     | sed "s#https://${cluster}-control-plane:6443#https://$(node_ip "${cluster}"):6443#" >"${WORK}/${name}-internal.kubeconfig"
-  KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/02-crossplane-api/install/add-location.sh" \
+  KUBECONFIG="${CP_KUBECONFIG}" "${ROOT}/crossplane-api/install/add-location.sh" \
     "${name}" "${WORK}/${name}-internal.kubeconfig"
   if ! "${C[@]}" wait "location/${name}" --for=condition=Ready --timeout=300s; then
     "${C[@]}" get location "${name}" -o yaml; "${C[@]}" -n cnpg-locations get objects.kubernetes.m.crossplane.io -o wide; exit 1

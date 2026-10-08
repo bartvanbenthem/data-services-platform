@@ -12,8 +12,8 @@
 # Settings (displayName, environment, region, schedulable, ...) are on the
 # Location: `kubectl edit location <name>`, or the portal.
 #
-# The location needs 01-operator (CNPG, Barman Cloud plugin, image catalogs)
-# and the Prometheus Operator CRDs: run ../../01-operator/install.sh with
+# The location needs operator (CNPG, Barman Cloud plugin, image catalogs)
+# and the Prometheus Operator CRDs: run ../../operator/install.sh with
 # KUBECONFIG pointing at it first. The kubeconfig is used from inside the
 # control plane, so its server must be reachable from there and its
 # credentials must not need a local exec plugin (use a token or client
@@ -59,7 +59,7 @@ LOCATION=(kubectl --kubeconfig "${KUBECONFIG_FILE}")
 echo "==> ${NAME}: $("${LOCATION[@]}" config view -o jsonpath='{.clusters[0].cluster.server}')"
 "${LOCATION[@]}" version >/dev/null
 if ! "${LOCATION[@]}" api-resources --api-group=postgresql.cnpg.io -o name | grep -q '^clusters\.'; then
-  echo "WARNING: CloudNativePG is not installed in ${NAME}; run 01-operator/install.sh against it before placing databases there" >&2
+  echo "WARNING: CloudNativePG is not installed in ${NAME}; run operator/install.sh against it before placing databases there" >&2
 fi
 
 echo "==> control plane: Secret ${LOCATIONS_NAMESPACE}/${NAME} + Location ${NAME}"

@@ -123,7 +123,7 @@ spec:
                       message: postgresVersion cannot be downgraded (major upgrades only go forward)
                 imageCatalog:
                   type: string
-                  description: Name of the ClusterImageCatalog to resolve postgresVersion in (installed by 01-operator).
+                  description: Name of the ClusterImageCatalog to resolve postgresVersion in (installed by operator).
                   default: postgresql-standard-trixie
                 instances:
                   type: integer
@@ -359,7 +359,7 @@ spec:
                   default: {}
                   description: >-
                     Continuous WAL archiving + scheduled base backups to S3-compatible object storage via
-                    the Barman Cloud plugin (installed by 01-operator). Without destinationPath and
+                    the Barman Cloud plugin (installed by operator). Without destinationPath and
                     s3Credentials it goes to the Project's backup bucket (Project spec.backup, COSI),
                     with credentials of their own in each site.
                   properties:

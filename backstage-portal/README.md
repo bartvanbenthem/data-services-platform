@@ -1,7 +1,7 @@
-# 03-backstage-portal: CNPG portal
+# backstage-portal: CNPG portal
 
 A Backstage app (1.55, new frontend system) for creating Projects and deploying and viewing every
-`PostgresCluster` from [`02-crossplane-api`](../02-crossplane-api). It runs on the platform's
+`PostgresCluster` from [`crossplane-api`](../crossplane-api). It runs on the platform's
 control plane, next to Crossplane; the databases run in the locations, which it reads through
 their kubeconfigs. It is a CNPG-only portal in KPN
 style: a dark theme, the KPN logo, and a fixed sidebar with Locations, Add location, Projects, New
@@ -60,7 +60,7 @@ XR reports in `status.monitoring.dashboardUid`. The portal embeds `<grafanaUrl>/
 For a cluster in a Project, `<grafanaUrl>` is the project's own Grafana (`status.grafana.url`, on
 the control plane), so nothing needs configuring. Its panels show the locations' metrics only with
 `prometheus.remoteWrite` in project-defaults (see
-[Locations](../02-crossplane-api/README.md#locations)). As a fallback, e.g. for a Grafana of your
+[Locations](../crossplane-api/README.md#locations)). As a fallback, e.g. for a Grafana of your
 own:
 
 ```sh
@@ -87,7 +87,7 @@ CNPG_GRAFANA_URL=https://grafana.example.com yarn start
 ### Locations
 
 A location is a Kubernetes cluster the databases run in: a `Location` object (cluster-scoped, see
-[`02-crossplane-api`](../02-crossplane-api/README.md#locations)) with the settings, pointing at a Secret
+[`crossplane-api`](../crossplane-api/README.md#locations)) with the settings, pointing at a Secret
 in the control plane's `cnpg-locations` namespace (`cnpg.locations.namespace`, label
 `platform.cncp.nl/location=true`) that holds the kubeconfig under the `kubeconfig` key. The backend
 writes the Secret first, then the Location. The kubeconfig never leaves the backend; the API returns
@@ -158,7 +158,7 @@ access to namespaces, and access to Secrets **only** in the `cnpg-locations` nam
 locations' kubeconfigs). Pods, pod logs, events and CNPG Clusters are read in the locations with
 their kubeconfigs. Backstage's own database is a plain CloudNativePG `Cluster`
 (`deploy/database.yaml`): no PostgresCluster can run on the control plane, so install
-[`01-operator`](../01-operator) there for it. Plugins share it per schema
+[`operator`](../operator) there for it. Plugins share it per schema
 (`pluginDivisionMode: schema`), because the CNPG app role can't create databases.
 
 Before production: replace the guest auth provider with your IdP

@@ -9,7 +9,7 @@
 #     present, mocks the resources the composition requests (the
 #     project-defaults EnvironmentConfig, Locations, the Project).
 #  3. `crossplane resource validate` of every rendered object against the
-#     real CRD schemas: CNPG + Barman Cloud from ../../../01-operator/charts,
+#     real CRD schemas: CNPG + Barman Cloud from ../../../operator/charts,
 #     Prometheus Operator, grafana-operator, provider-kubernetes and
 #     Crossplane's ClusterUsage from ../crds. The manifest inside each provider-kubernetes Object (what goes
 #     to a remote location) is validated too. Core kinds (Namespace,
@@ -22,7 +22,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_ROOT="$(cd "${HERE}/../.." && pwd)"
-OPERATOR_CHARTS="$(cd "${API_ROOT}/../01-operator/charts" && pwd)"
+OPERATOR_CHARTS="$(cd "${API_ROOT}/../operator/charts" && pwd)"
 FUNCTIONS="${API_ROOT}/install/functions.yaml"
 APIS=(postgrescluster project location)
 

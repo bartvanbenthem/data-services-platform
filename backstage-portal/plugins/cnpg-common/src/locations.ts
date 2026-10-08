@@ -2,7 +2,7 @@
  * Locations: the Kubernetes clusters the platform runs data services in; the
  * control plane (where Crossplane and the portal run) runs none. Each one is
  * a Location (platform.cncp.nl/v1alpha1, cluster-scoped, see
- * 02-crossplane-api/apis/location) with the settings below, pointing at a
+ * crossplane-api/apis/location) with the settings below, pointing at a
  * Secret on the control plane (namespace `cnpg.locations.namespace`) that
  * holds its kubeconfig under the `kubeconfig` key. The Location composition
  * creates the provider-kubernetes ClusterProviderConfig the Project and

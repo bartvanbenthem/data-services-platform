@@ -1,4 +1,4 @@
-# 02-crossplane-api: the `PostgresCluster` and `Project` APIs
+# crossplane-api: the `PostgresCluster` and `Project` APIs
 
 Two Crossplane **v2** composite resources:
 
@@ -156,8 +156,8 @@ in **locations**: other Kubernetes clusters registered with the platform. Each P
 location as its **protected site** and optionally another as its **recovery site**.
 
 ```sh
-KUBECONFIG=dc-a.kubeconfig ../01-operator/install.sh           # in every location: CNPG, Barman Cloud, catalogs
-KUBECONFIG=dc-b.kubeconfig ../01-operator/install.sh
+KUBECONFIG=dc-a.kubeconfig ../operator/install.sh           # in every location: CNPG, Barman Cloud, catalogs
+KUBECONFIG=dc-b.kubeconfig ../operator/install.sh
 install/add-location.sh dc-a dc-a.kubeconfig                    # on the control plane, or: portal > Locations > Add
 install/add-location.sh dc-b dc-b.kubeconfig
 kubectl get locations -o wide                                    # CONNECTED, READY, what's missing
@@ -195,7 +195,7 @@ Crossplane found. The Location is `READY` once it is connected and both operator
 Every object for a location is a namespaced `kubernetes.m.crossplane.io` `Object` next to the XR
 on the control plane, which the provider applies in that location with that kubeconfig. Its live
 state comes back through `status.atProvider.manifest`, and the compositions read it from there.
-The location needs [`01-operator`](../01-operator) and the Prometheus Operator CRDs. The
+The location needs [`operator`](../operator) and the Prometheus Operator CRDs. The
 kubeconfig's identity needs cluster-admin or an equivalent role, and must work from inside the
 control plane (no exec plugins).
 
@@ -374,7 +374,7 @@ Prometheus and Grafana; CloudNativePG isn't needed there):
 ```sh
 install/install.sh                        # Crossplane 2.4.2 + everything above
 SKIP_CROSSPLANE=true install/install.sh   # Crossplane already installed
-install/add-location.sh dc-a dc-a.kubeconfig      # every location: ../01-operator/install.sh there first
+install/add-location.sh dc-a dc-a.kubeconfig      # every location: ../operator/install.sh there first
 kubectl apply -f examples/project-defaults.yaml   # edit the ingress hosts first
 kubectl apply -f examples/project.yaml            # edit spec.locations first
 kubectl apply -f examples/minimal.yaml

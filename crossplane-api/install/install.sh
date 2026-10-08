@@ -9,8 +9,8 @@
 # The control plane runs no databases, so it doesn't need CloudNativePG.
 # It does run each Project's Prometheus (the remote-write receiver) and
 # Grafana: install the Prometheus Operator and grafana-operator first
-# (../../00-deps), or switch them off per Project. Every location needs
-# ../../01-operator/install.sh and the Prometheus Operator.
+# (../../deps), or switch them off per Project. Every location needs
+# ../../operator/install.sh and the Prometheus Operator.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
