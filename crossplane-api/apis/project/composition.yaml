@@ -630,6 +630,10 @@ spec:
                       automountServiceAccountToken: false
                       securityContext:
                         runAsNonRoot: true
+                        # Numeric, so the kubelet can verify non-root for images whose
+                        # USER is a name (curlimages/curl runs as "curl_user").
+                        runAsUser: 65534
+                        runAsGroup: 65534
                         seccompProfile:
                           type: RuntimeDefault
                       containers:

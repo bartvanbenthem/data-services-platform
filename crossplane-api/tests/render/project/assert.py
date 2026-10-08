@@ -177,7 +177,8 @@ if case == "bucket":
                   and env == {"LOCATION": loc, "S3_ENDPOINT": "https://s3.example.com",
                               "S3_BUCKET": f"{name}-backups-0f3a", "ACCESS_KEY_ID": "backup-check-s3",
                               "ACCESS_SECRET_KEY": "backup-check-s3", "REGION": "backup-check-s3"}
-                  and c["securityContext"]["readOnlyRootFilesystem"] and pod["securityContext"]["runAsNonRoot"],
+                  and c["securityContext"]["readOnlyRootFilesystem"] and pod["securityContext"]["runAsNonRoot"]
+                  and isinstance(pod["securityContext"].get("runAsUser"), int),
                   f"{loc}: backup-check CronJob {cj['spec']}")
         # observe.py reports each CronJob's last run as successful.
         check(backup.get("reachability") == [
