@@ -96,11 +96,28 @@ const ConnectionUri = ({ namespace, name, masked }: { namespace: string; name: s
     else if (await load()) setShown(true);
   };
   const copy = async () => {
-    const c = await load();
-    if (!c) return;
-    await navigator.clipboard.writeText(c.uri);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    // The clipboard write must start inside the click: one begun after
+    // awaiting the fetch is refused ("Document is not focused"). A
+    // ClipboardItem takes the URI as a promise, so it can.
+    const text = load().then(c => {
+      if (!c) throw new Error('no connection URI');
+      return c.uri;
+    });
+    try {
+      if (conn || typeof ClipboardItem === 'undefined') {
+        await navigator.clipboard.writeText(await text);
+      } else {
+        const blob = text.then(t => new Blob([t], { type: 'text/plain' }));
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      // A failed fetch has already set its own error.
+      if (await text.then(() => true, () => false)) {
+        setError(`Couldn't copy: ${(e as Error).message}. Use Show and copy it by hand.`);
+      }
+    }
   };
 
   return (
