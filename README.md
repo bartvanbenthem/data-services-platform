@@ -1,17 +1,40 @@
-# Autonomous data services platform
+# Managed PostgreSQL with CloudNativePG
 
-A data services platform on Kubernetes, in three layers. A **control plane** cluster runs the
-APIs (Crossplane) and the portal (Backstage), but no databases. Those run in **locations**, other
+A self-service, managed PostgreSQL offering on Kubernetes, built on
+[CloudNativePG](https://cloudnative-pg.io/) (CNPG).
+
+> **Scope.** For now this project covers one data service only: **managed PostgreSQL with CNPG**.
+> Other engines (caches, message queues, document stores, ...) are out of scope. The layered design
+> (control plane, locations, Projects) leaves room for them later, but nothing here is built or
+> tested for them.
+
+The platform has three layers. A **control plane** cluster runs the APIs (Crossplane) and the portal
+(Backstage), but no databases. The PostgreSQL clusters run in **locations**, which are other
 Kubernetes clusters registered with the platform. Teams get a **Project** (a namespace with its own
 Prometheus and Grafana) with a **protected** location, where its PostgreSQL clusters run, and
-optionally a **recovery** location. With geo replication a cluster keeps a CloudNativePG replica
-cluster in the recovery location, ready to take over, fed through the project's backup bucket
-(provisioned with COSI on the control plane, with keys of its own for each location).
+optionally a **recovery** location. With geo replication, a cluster keeps a CNPG replica cluster in
+the recovery location, ready to take over. The replica is fed through the project's backup bucket,
+which is provisioned with COSI on the control plane and has its own keys for each location.
+
+### Multi-region replicas and disaster recovery
+
+- **Multi-region replicas:** the protected and recovery locations can be clusters in different
+  regions or data centers. With geo replication on, every PostgreSQL cluster keeps a CNPG replica
+  cluster in the recovery location that continuously replays WAL from the project's backup bucket.
+- **Disaster recovery:** set `geoReplication.promotion` on a `PostgresCluster` to move the primary
+  to the other location. `Switchover` (the default) is for planned moves: it promotes the replica
+  without losing data, and the old primary then follows it as a replica. `Failover` promotes the
+  recovery location right away, for when the protected location is down. Turning geo replication
+  off switches back to the protected location first, so no writes are lost.
+- **Backups:** continuous backups and WAL archiving to the project's object storage bucket with the
+  Barman Cloud plugin. The recovery location's replica is fed from this bucket.
+
+See [Locations](02-crossplane-api/README.md#locations) for how to configure this.
 
 | Folder | What | Built with |
 |---|---|---|
-| [`01-operator/`](01-operator/) | CloudNativePG operator, Barman Cloud backup plugin and the PostgreSQL image catalog, installed from charts **vendored in this repo** | Helm |
 | [`00-deps/`](00-deps/) | cert-manager, Prometheus Operator, grafana-operator, ingress; the `demo` Project | Helm, kubectl |
+| [`01-operator/`](01-operator/) | CloudNativePG operator, Barman Cloud backup plugin and the PostgreSQL image catalog, installed from charts **vendored in this repo** | Helm |
 | [`02-crossplane-api/`](02-crossplane-api/) | `PostgresCluster` (`cnpg.cncp.nl/v1alpha1`): one namespaced API object that bundles everything a production CNPG cluster needs, including metrics, alerts and the CNPG Grafana dashboard. `Project` (`platform.cncp.nl/v1alpha1`): a namespace with its own Prometheus and Grafana, RoleBindings, an optional quota and deletion protection. Both place what runs in the locations through provider-kubernetes | Crossplane v2 |
 | [`03-backstage-portal/`](03-backstage-portal/) | Portal to create projects and clusters and to inspect them; catalog integration and Software Templates | Backstage (new frontend + backend system) |
 
