@@ -382,7 +382,7 @@ Until its first instance is up, `status.message` says `Restoring <name> from bac
 (...)`. The target time must be after the folder's first recoverability point (the portal checks
 it), and the source's major version and application database must match: CloudNativePG can't
 restore across major versions. The portal's **Backups** tab ("Restore to a new cluster") copies the
-source cluster's settings (without geo replication or `expose`), and the project page restores any
+source cluster's settings (without geo replication), and the project page restores any
 folder in the inventory.
 
 After a switchover, the primary archives to the recovery site's folder, which only has base backups
@@ -432,9 +432,10 @@ client-side `last-applied-configuration` annotation limit.
 ## Connect from outside the cluster
 
 The database runs in the Project's protected location, so connect there (`kubectl` against that
-cluster). With `spec.expose` set (as in `examples/minimal.yaml`), the primary is reachable through
-the LoadBalancer Service `<name>-external`. Your client IP must be in
-`expose.loadBalancerSourceRanges`.
+cluster). The applications run on other clusters, so every PostgresCluster is exposed: `spec.expose`
+defaults to `{type: LoadBalancer}`, and the primary is reachable through the LoadBalancer Service
+`<name>-external`. Set `expose.loadBalancerSourceRanges` to the application clusters' egress IPs;
+without it the Service accepts connections from anywhere.
 
 ```sh
 export KUBECONFIG=dc-a.kubeconfig     # the protected location

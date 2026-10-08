@@ -539,7 +539,11 @@ spec:
                           default: prometheus
                 expose:
                   type: object
-                  description: Expose the read-write service outside the cluster as <name>-external.
+                  description: >-
+                    Expose the read-write service outside the cluster as <name>-external.
+                    Always on: the applications run on other clusters.
+                  default:
+                    type: LoadBalancer
                   properties:
                     type:
                       type: string

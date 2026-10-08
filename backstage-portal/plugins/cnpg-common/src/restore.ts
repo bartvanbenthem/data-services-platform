@@ -96,15 +96,15 @@ export function targetTimeError(
 /**
  * The spec of a new cluster restored from `source`. `base` is the spec of
  * the cluster the folder belongs to while it still exists: the copy gets the
- * same size and settings, but no replica cluster or external service of its
- * own until they're turned on (a restore is often a copy to look at). Without
- * one it gets the defaults, with backups in the Project's bucket.
+ * same size, settings and external service, but no replica cluster of its own
+ * until it's turned on (a restore is often a copy to look at). Without one it
+ * gets the defaults, with backups in the Project's bucket.
  */
 export function restoreSpec(
   source: RestoreSource,
   options: { targetTime?: string; storageSize?: string; base?: Record<string, any> } = {},
 ): Record<string, unknown> {
-  const { restore: _r, geoReplication: _g, expose: _e, ...base } = options.base ?? {};
+  const { restore: _r, geoReplication: _g, ...base } = options.base ?? {};
   let spec: Record<string, any> = base;
   if (!options.base) spec = source.store ? {} : { backup: { enabled: true } };
   if (source.postgresVersion) spec.postgresVersion = source.postgresVersion;

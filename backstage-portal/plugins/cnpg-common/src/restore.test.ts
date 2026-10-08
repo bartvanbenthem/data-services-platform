@@ -75,7 +75,7 @@ describe('restore', () => {
     });
   });
 
-  it('copies the source cluster, without a replica cluster or external service', () => {
+  it('copies the source cluster and its external service, without a replica cluster', () => {
     const source = clusterRestoreSource(ordersDb) as any;
     expect(
       restoreSpec(source, { base: ordersDb.spec, targetTime: '2026-10-08T09:30:00Z' }),
@@ -85,6 +85,7 @@ describe('restore', () => {
       storage: { size: '50Gi' },
       database: { name: 'orders', owner: 'orders' },
       backup: { enabled: true, retentionPolicy: '14d' },
+      expose: { type: 'LoadBalancer' },
       pooler: { enabled: true },
       restore: { source: { serverName: 'orders-db' }, targetTime: '2026-10-08T09:30:00Z' },
     });
