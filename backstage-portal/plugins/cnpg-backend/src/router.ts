@@ -15,6 +15,7 @@ import {
   cnpgBucketDeletePermission,
   cnpgBucketReadPermission,
   cnpgClusterCreatePermission,
+  cnpgClusterCredentialsReadPermission,
   cnpgClusterDeletePermission,
   cnpgClusterFailoverPermission,
   cnpgClusterReadPermission,
@@ -278,6 +279,15 @@ export async function createRouter(options: {
     const q = logsQuery.safeParse(req.query);
     if (!q.success) throw new InputError(q.error.toString());
     res.json(await k8s.logs(p.namespace, p.name, q.data, location => locations.kubeConfig(location)));
+  });
+
+  router.get('/clusters/:namespace/:name/connection', async (req, res) => {
+    await authorize(req, cnpgClusterReadPermission);
+    await authorize(req, cnpgClusterCredentialsReadPermission);
+    const p = params(req);
+    // Carries the password: keep it out of every cache.
+    res.set('Cache-Control', 'no-store');
+    res.json(await k8s.connection(p.namespace, p.name, location => locations.kubeConfig(location)));
   });
 
   // Locations: Kubernetes clusters the platform can use. The kubeconfig goes

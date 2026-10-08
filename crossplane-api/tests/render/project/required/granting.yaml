@@ -1,0 +1,135 @@
+# project-defaults with a COSI driver and access class, both Locations, and what COSI wrote for each
+# BucketAccess (fake keys).
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: project-defaults
+data:
+  backup:
+    cosi:
+      driverName: cloudian-cosi-driver
+      parameters:
+        storagePolicy: replicated-3
+      bucketAccessClassName: backups-keys
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: si-ske-demo
+spec:
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: si-ske-demo
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: onprem-ams
+spec:
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: onprem-ams
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cosi-backups-si-ske-demo
+  namespace: team-orders
+data:
+  BucketInfo: eyJtZXRhZGF0YSI6IHsibmFtZSI6ICJiYy1zaS1za2UtZGVtbyJ9LCAic3BlYyI6IHsiYnVja2V0TmFtZSI6ICJ0ZWFtLW9yZGVycy1iYWNrdXBzLTBmM2EiLCAiYXV0aGVudGljYXRpb25UeXBlIjogIklBTSIsICJzZWNyZXRTMyI6IHsiZW5kcG9pbnQiOiAiaHR0cHM6Ly9zMy5leGFtcGxlLmNvbSIsICJyZWdpb24iOiAicmVnaW9uLTEiLCAiYWNjZXNzS2V5SUQiOiAiRkFLRUtFWUlEMCIsICJhY2Nlc3NTZWNyZXRLZXkiOiAiZmFrZS1zZWNyZXQtMCJ9LCAic2VjcmV0QXp1cmUiOiBudWxsLCAicHJvdG9jb2xzIjogWyJTMyJdfX0=
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cosi-backups-onprem-ams
+  namespace: team-orders
+data:
+  BucketInfo: eyJtZXRhZGF0YSI6IHsibmFtZSI6ICJiYy1vbnByZW0tYW1zIn0sICJzcGVjIjogeyJidWNrZXROYW1lIjogInRlYW0tb3JkZXJzLWJhY2t1cHMtMGYzYSIsICJhdXRoZW50aWNhdGlvblR5cGUiOiAiSUFNIiwgInNlY3JldFMzIjogeyJlbmRwb2ludCI6ICJodHRwczovL3MzLmV4YW1wbGUuY29tIiwgInJlZ2lvbiI6ICJyZWdpb24tMSIsICJhY2Nlc3NLZXlJRCI6ICJGQUtFS0VZSUQxIiwgImFjY2Vzc1NlY3JldEtleSI6ICJmYWtlLXNlY3JldC0xIn0sICJzZWNyZXRBenVyZSI6IG51bGwsICJwcm90b2NvbHMiOiBbIlMzIl19fQ==
+---
+# The PostgresClusters' backup stores (Objects labelled
+# cnpg.cncp.nl/backup-store): orders-db and its replica cluster archive to
+# the project's bucket, ledger-db to an object store of its own.
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-objectstore
+  namespace: team-orders
+  labels:
+    cnpg.cncp.nl/backup-store: "true"
+    cnpg.cncp.nl/postgrescluster: orders-db
+  annotations:
+    platform.cncp.nl/location: si-ske-demo
+status:
+  atProvider:
+    manifest:
+      apiVersion: barmancloud.cnpg.io/v1
+      kind: ObjectStore
+      metadata:
+        name: orders-db-backup
+        namespace: team-orders
+        annotations:
+          cnpg.cncp.nl/server-name: orders-db
+          cnpg.cncp.nl/postgres-version: "17"
+          cnpg.cncp.nl/database: orders
+          cnpg.cncp.nl/database-owner: orders
+      spec:
+        configuration:
+          destinationPath: s3://team-orders-backups-0f3a/barman
+      status:
+        serverRecoveryWindow:
+          orders-db:
+            firstRecoverabilityPoint: "2026-10-02T02:00:00Z"
+            lastSuccessfulBackupTime: "2026-10-08T02:00:00Z"
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-objectstore
+  namespace: team-orders
+  labels:
+    cnpg.cncp.nl/backup-store: "true"
+    cnpg.cncp.nl/postgrescluster: orders-db
+  annotations:
+    platform.cncp.nl/location: onprem-ams
+status:
+  atProvider:
+    manifest:
+      apiVersion: barmancloud.cnpg.io/v1
+      kind: ObjectStore
+      metadata:
+        name: orders-db-backup
+        namespace: team-orders
+        annotations:
+          cnpg.cncp.nl/server-name: orders-db-onprem-ams
+          cnpg.cncp.nl/postgres-version: "17"
+          cnpg.cncp.nl/database: orders
+          cnpg.cncp.nl/database-owner: orders
+      spec:
+        configuration:
+          destinationPath: s3://team-orders-backups-0f3a/barman
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: ledger-db-objectstore
+  namespace: team-orders
+  labels:
+    cnpg.cncp.nl/backup-store: "true"
+    cnpg.cncp.nl/postgrescluster: ledger-db
+  annotations:
+    platform.cncp.nl/location: si-ske-demo
+status:
+  atProvider:
+    manifest:
+      apiVersion: barmancloud.cnpg.io/v1
+      kind: ObjectStore
+      metadata:
+        name: ledger-db-backup
+        namespace: team-orders
+        annotations:
+          cnpg.cncp.nl/server-name: ledger-db
+      spec:
+        configuration:
+          destinationPath: s3://elsewhere/postgres

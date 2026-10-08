@@ -1,5 +1,7 @@
+import { useApi } from '@backstage/frontend-plugin-api';
 import {
   Alert,
+  Button,
   Card,
   CardBody,
   CardHeader,
@@ -13,13 +15,15 @@ import {
   useTable,
 } from '@backstage/ui';
 import {
+  type ClusterConnection,
   type ClusterEvent,
   type ClusterLocationStatus,
   type Condition,
   type InstancePod,
   type PostgresClusterDetails,
 } from '@internal/backstage-plugin-cnpg-common';
-import { ReactNode } from 'react';
+import { ReactNode, useState } from 'react';
+import { cnpgApiRef } from '../api';
 import { age, Fields, health, Mono } from './common';
 
 const StaticTable = <T extends { id: string }>({
@@ -58,6 +62,71 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 );
 
 const onOff = (v: unknown) => (v ? 'enabled' : 'disabled');
+
+/**
+ * The app connection URI, masked until asked for. The password is only
+ * fetched (live from the primary's Secret, with the external LB address)
+ * when the user shows or copies it.
+ */
+const ConnectionUri = ({ namespace, name, masked }: { namespace: string; name: string; masked: string }) => {
+  const api = useApi(cnpgApiRef);
+  const [conn, setConn] = useState<ClusterConnection>();
+  const [shown, setShown] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const load = async () => {
+    if (conn) return conn;
+    setPending(true);
+    setError(undefined);
+    try {
+      const c = await api.getConnection(namespace, name);
+      setConn(c);
+      return c;
+    } catch (e) {
+      setError((e as Error).message);
+      return undefined;
+    } finally {
+      setPending(false);
+    }
+  };
+  const toggle = async () => {
+    if (shown) setShown(false);
+    else if (await load()) setShown(true);
+  };
+  const copy = async () => {
+    const c = await load();
+    if (!c) return;
+    await navigator.clipboard.writeText(c.uri);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <Flex direction="column" gap="1">
+      <Mono>{shown && conn ? conn.uri : masked}</Mono>
+      <Flex gap="2">
+        <Button size="small" variant="secondary" loading={pending} onPress={toggle}>
+          {shown ? 'Hide' : 'Show'}
+        </Button>
+        <Button size="small" variant="secondary" isDisabled={pending} onPress={copy}>
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </Flex>
+      {conn && !conn.external && (
+        <Text variant="body-small" color="secondary">
+          The load balancer has no address yet: this is the in-cluster host.
+        </Text>
+      )}
+      {error && (
+        <Text variant="body-small" color="danger">
+          {error}
+        </Text>
+      )}
+    </Flex>
+  );
+};
 
 /**
  * Everything about one PostgresCluster: health, connection details,
@@ -135,12 +204,17 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
                     : summary.primaryLocation] as [string, ReactNode]]
                 : []),
               ['Database', `${spec.database?.name ?? 'app'} (owner ${spec.database?.owner ?? 'app'})`],
+              ...(details.externalHost
+                ? [['External (rw)', <Mono>{details.externalHost}:5432</Mono>] as [string, ReactNode]]
+                : []),
               ['Credentials', <Mono>Secret {ns}/{status.secrets?.app}</Mono>],
               [
                 'Connection URI',
-                <Mono>
-                  kubectl -n {ns} get secret {status.secrets?.app} -o jsonpath='{'{'}.data.uri{'}'}' | base64 -d
-                </Mono>,
+                <ConnectionUri
+                  namespace={ns}
+                  name={summary.name}
+                  masked={`postgresql://${spec.database?.owner ?? 'app'}:••••••@${details.externalHost ?? status.endpoints?.readWrite}:5432/${spec.database?.name ?? 'app'}`}
+                />,
               ],
             ]}
           />

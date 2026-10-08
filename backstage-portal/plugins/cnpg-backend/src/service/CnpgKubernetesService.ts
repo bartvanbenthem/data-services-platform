@@ -22,6 +22,7 @@ import {
   PatchStrategy,
 } from '@kubernetes/client-node';
 import {
+  ClusterConnection,
   ClusterEvent,
   clusterLocations,
   InstancePod,
@@ -136,10 +137,11 @@ export class CnpgKubernetesService {
           const kc = await this.#kubeConfig(location, kubeConfigFor);
           const core = kc.makeApiClient(CoreV1Api);
           const custom = kc.makeApiClient(CustomObjectsApi);
-          const [pods, events, cnpg] = await Promise.all([
+          const primary = location === summary.primaryLocation;
+          const [pods, events, cnpg, externalHost] = await Promise.all([
             this.#pods(core, location, namespace, name),
             this.#events(core, location, namespace, name),
-            location === summary.primaryLocation
+            primary
               ? custom
                   .getNamespacedCustomObject({
                     group: 'postgresql.cnpg.io',
@@ -150,11 +152,12 @@ export class CnpgKubernetesService {
                   })
                   .catch(() => undefined)
               : undefined,
+            primary ? this.#externalHost(core, namespace, name) : undefined,
           ]);
-          return { pods, events, cnpgStatus: cnpg?.status };
+          return { pods, events, cnpgStatus: cnpg?.status, externalHost };
         } catch (e) {
           unreachable.push({ location, message: (e as Error).message });
-          return { pods: [], events: [], cnpgStatus: undefined };
+          return { pods: [], events: [], cnpgStatus: undefined, externalHost: undefined };
         }
       }),
     );
@@ -167,6 +170,7 @@ export class CnpgKubernetesService {
         .sort((a, b) => (b.lastSeen ?? '').localeCompare(a.lastSeen ?? ''))
         .slice(0, 15),
       cnpgStatus: perLocation.find(l => l.cnpgStatus)?.cnpgStatus,
+      externalHost: perLocation.find(l => l.externalHost)?.externalHost,
       ...(unreachable.length ? { unreachable } : {}),
     };
   }
@@ -218,6 +222,35 @@ export class CnpgKubernetesService {
       }),
     );
     return { pod, location, container: container ?? '', text: text ?? '' };
+  }
+
+  /**
+   * The app Secret's URI from the primary's location, with its in-cluster
+   * host swapped for the "<name>-external" load balancer's address. Read
+   * live, so it follows a switchover and a changed LB IP.
+   */
+  async connection(
+    namespace: string,
+    name: string,
+    kubeConfigFor?: LocationKubeConfig,
+  ): Promise<ClusterConnection> {
+    const cluster = await this.get(namespace, name);
+    const location = summarize(cluster).primaryLocation;
+    if (!location) throw new NotFoundError(`Cluster ${namespace}/${name} isn't placed yet`);
+    const core = (await this.#kubeConfig(location, kubeConfigFor)).makeApiClient(CoreV1Api);
+    const secretName = cluster.status?.secrets?.app || `${name}-app`;
+    const [secret, host] = await Promise.all([
+      this.#call(
+        () => core.readNamespacedSecret({ namespace, name: secretName }),
+        `Secret ${namespace}/${secretName} in ${location}`,
+      ),
+      this.#externalHost(core, namespace, name),
+    ]);
+    const raw = secret.data?.uri;
+    if (!raw) throw new NotFoundError(`Secret ${namespace}/${secretName} in ${location} has no uri`);
+    const uri = new URL(Buffer.from(raw, 'base64').toString('utf8'));
+    if (host) uri.hostname = host.includes(':') ? `[${host}]` : host;
+    return { uri: uri.toString(), location, external: !!host };
   }
 
   /**
@@ -532,6 +565,19 @@ export class CnpgKubernetesService {
         createdAt: toIso(p.metadata?.creationTimestamp),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** The LB address of the "<name>-external" read-write service, if it has one yet. */
+  async #externalHost(
+    core: CoreV1Api,
+    namespace: string,
+    name: string,
+  ): Promise<string | undefined> {
+    const svc = await core
+      .readNamespacedService({ namespace, name: `${name}-external` })
+      .catch(() => undefined);
+    const ingress = svc?.status?.loadBalancer?.ingress?.[0];
+    return ingress?.ip || ingress?.hostname || undefined;
   }
 
   async #events(

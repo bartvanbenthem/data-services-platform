@@ -157,6 +157,16 @@ export interface PodLogs {
   text: string;
 }
 
+/** The app user's connection URI, pointed at the external load balancer when it has an address. */
+export interface ClusterConnection {
+  /** postgresql://user:password@host:5432/db */
+  uri: string;
+  /** Location whose Secret and load balancer were read (the primary's). */
+  location: string;
+  /** False while the LB has no address yet: the URI still has the in-cluster host. */
+  external: boolean;
+}
+
 /** Everything the detail page shows, gathered in one round-trip. */
 export interface PostgresClusterDetails {
   summary: PostgresClusterSummary;
@@ -165,6 +175,11 @@ export interface PostgresClusterDetails {
   events: ClusterEvent[];
   /** Live CNPG Cluster status of the primary's location (instance roles, timeline...). */
   cnpgStatus?: Record<string, any>;
+  /**
+   * Load balancer IP (or hostname) of the "<name>-external" read-write
+   * service in the primary's location; unset until the LB has one.
+   */
+  externalHost?: string;
   /** Locations whose pods/events couldn't be read, with the reason. */
   unreachable?: Array<{ location: string; message: string }>;
 }

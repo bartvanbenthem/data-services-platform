@@ -63,6 +63,13 @@ EXPECTED = {
                                   "backup-sa-si-ske-demo", "backup-sa-onprem-ams",
                                   "backup-s3-si-ske-demo", "backup-s3-onprem-ams"}
                | at("si-ske-demo", REMOTE | CHECK) | at("onprem-ams", REMOTE | CHECK)},
+    # The same while COSI grants si-ske-demo's access: onprem-ams's waits for it.
+    "granting": {"empty": {"namespace", "usage-location-si-ske-demo", "usage-location-onprem-ams", "backup-bucketclass"},
+                 "observed": HUB | {"usage-location-si-ske-demo", "usage-location-onprem-ams", "backup-bucketclass",
+                                    "backup-bucket", "backup-access-si-ske-demo",
+                                    "backup-sa-si-ske-demo", "backup-sa-onprem-ams",
+                                    "backup-s3-si-ske-demo", "backup-s3-onprem-ams"}
+                 | at("si-ske-demo", REMOTE | CHECK) | at("onprem-ams", REMOTE | CHECK)},
     # The same with a name too long for project-<name>-backups (see bucket_class).
     "bucket-long": {"empty": {"namespace", "usage-location-si-ske-demo", "usage-location-onprem-ams",
                               "backup-bucketclass"}},
@@ -99,7 +106,7 @@ check(ann.get("platform.cncp.nl/unschedulable-locations") == ("si-ske-demo" if c
       "namespace must list the locations closed to new databases for the admission policy")
 
 # --- the COSI backup bucket
-bucket_case = case in ("bucket", "bucket-long")
+bucket_case = case in ("bucket", "bucket-long", "granting")
 check((ann.get("platform.cncp.nl/backup-bucket") == "true") == bucket_case,
       "namespace must say whether the project has a backup bucket, for the admission policy")
 # COSI names the bucket <class><claim UID>: the class gets 63 - 36 characters.
@@ -120,6 +127,8 @@ if bucket_case:
               and claim["spec"] == {"bucketClassName": bucket_class, "protocols": ["S3"]},
               f"BucketClaim {claim}")
         for loc in sites.values():
+            if case == "granting" and loc == sites["recovery"]:
+                continue
             acc = composed[f"backup-access-{loc}"]
             check(acc["kind"] == "BucketAccess" and acc["metadata"]["name"] == f"backups-{loc}"
                   and acc["spec"] == {"bucketClaimName": "backups", "bucketAccessClassName": "backups-keys",
@@ -355,6 +364,9 @@ if state == "empty":
     check(status.get("ready") is False, "status.ready should be false before anything exists")
     check(conds.get("Ready", {}).get("status") == "False", "XR Ready should be False")
     check(conds.get("ObservabilityReady", {}).get("status") == "False", "ObservabilityReady should be False")
+elif case == "granting":
+    check(status.get("ready") is False and status.get("message") == "Waiting for COSI to grant backup bucket access in si-ske-demo, onprem-ams", f"status {status.get('message')!r}")
+    check(conds.get("Ready", {}).get("status") == "False", f"XR Ready waits for the BucketAccess: {conds.get('Ready')}")
 elif case != "bucket":
     check(status.get("ready") is True, f"status.ready should be true, got {status.get('ready')}")
     check(conds.get("Ready", {}).get("status") == "True", f"XR Ready should be True, got {conds.get('Ready')}")

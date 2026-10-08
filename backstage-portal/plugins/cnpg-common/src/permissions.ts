@@ -26,6 +26,15 @@ export const cnpgClusterDeletePermission = createPermission({
 });
 
 /**
+ * Read a cluster's app connection URI, password included (also needs
+ * cnpg.cluster.read). Grant it to whoever may connect to the database.
+ */
+export const cnpgClusterCredentialsReadPermission = createPermission({
+  name: 'cnpg.cluster.credentials.read',
+  attributes: { action: 'read' },
+});
+
+/**
  * Create a cluster from another cluster's backups (also needs
  * cnpg.cluster.create). The new cluster holds a copy of that data, so this
  * is reading it.
@@ -135,6 +144,7 @@ export const cnpgPermissions = [
   cnpgClusterCreatePermission,
   cnpgClusterUpdatePermission,
   cnpgClusterDeletePermission,
+  cnpgClusterCredentialsReadPermission,
   cnpgClusterRestorePermission,
   cnpgClusterSwitchoverPermission,
   cnpgClusterFailoverPermission,

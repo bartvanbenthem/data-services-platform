@@ -20,7 +20,8 @@
 #   BucketAccess backups-<location>       one per location: its own S3 keys, which COSI
 #                                         writes to Secret cosi-backups-<location>; with a
 #                                         ServiceAccount backups-<location> (IAM access classes
-#                                         need one)
+#                                         need one); created one at a time, the next once the
+#                                         previous is granted
 #   Secret backup-s3-<location>           those keys unpacked from COSI's BucketInfo JSON
 #                                         (ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION), what
 #                                         PostgresClusters copy to that location
@@ -951,6 +952,7 @@ spec:
             {{- end }}
             {{- end }}
             {{- if $bucketOn }}{{ $bucket = dict "ready" false "namespace" $ns }}{{ end }}
+            {{- $ungranted := list }}
             {{- /* The rest lives in the project namespace: none before it exists. */}}
             {{- if and $bucketOn $hubNs }}
             {{- $claim := dig "backup-bucket" "resource" (dict) $observed }}
@@ -975,8 +977,13 @@ spec:
             spec:
               bucketClassName: {{ $bucketClass | quote }}
               protocols: [S3]
+            {{- /* One grant at a time: concurrent grants race on the Bucket's finalizer,
+                 and a grant retried after a conflict fails for good (the driver's
+                 CreateUser isn't idempotent), leaving the access unready forever. */}}
+            {{- $granting := false }}
             {{- range $loc := $siteLocations }}
             {{- $access := dig (printf "backup-access-%s" $loc) "resource" (dict) $observed }}
+            {{- $granted := dig "status" "accessGranted" false $access }}
             {{- /* The COSI sidecar refuses an IAM-type access class without a
                  ServiceAccount; nothing runs as it (the locations use the keys). */}}
             ---
@@ -994,6 +1001,9 @@ spec:
                 {{ $k }}: {{ $v | quote }}
                 {{- end }}
             automountServiceAccountToken: false
+            {{- if not $granted }}{{ $ungranted = append $ungranted $loc }}{{ end }}
+            {{- if or $access (not $granting) }}
+            {{- if not $granted }}{{ $granting = true }}{{ end }}
             ---
             apiVersion: objectstorage.k8s.io/v1alpha1
             kind: BucketAccess
@@ -1002,7 +1012,7 @@ spec:
               namespace: {{ $ns }}
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: backup-access-{{ $loc }}
-                gotemplating.fn.crossplane.io/ready: {{ if dig "status" "accessGranted" false $access }}"True"{{ else }}"False"{{ end }}
+                gotemplating.fn.crossplane.io/ready: {{ if $granted }}"True"{{ else }}"False"{{ end }}
                 platform.cncp.nl/location: {{ $loc }}
               labels:
                 {{- range $k, $v := $labels }}
@@ -1014,6 +1024,7 @@ spec:
               credentialsSecretName: cosi-backups-{{ $loc }}
               serviceAccountName: backups-{{ $loc }}
               protocol: S3
+            {{- end }}
             {{- /* COSI's Secret holds one BucketInfo JSON document; CNPG needs the keys
                  as Secret keys of their own. */}}
             {{- with dig (printf "cosi-%s" $loc) "items" (list) $extra }}
@@ -1104,7 +1115,8 @@ spec:
             {{- if eq $st.location "local" }}{{ $waiting = concat $waiting $st.waiting }}
             {{- else }}{{ range $w := $st.waiting }}{{ $waiting = append $waiting (printf "%s in %s" $w $st.location) }}{{ end }}{{ end }}
             {{- end }}
-            {{- if and $bucketOn (not $bucket.ready) }}{{ $waiting = append $waiting "the backup bucket (COSI)" }}{{ end }}
+            {{- if and $bucketOn (not $bucket.ready) }}{{ $waiting = append $waiting "the backup bucket (COSI)" }}
+            {{- else if $ungranted }}{{ $waiting = append $waiting (printf "COSI to grant backup bucket access in %s" (join ", " $ungranted)) }}{{ end }}
             {{- $ready := not (or $waiting $problems) }}
             {{- $msg := printf "Project %s is ready" $name }}
             {{- if $problems }}{{ $msg = join "; " $problems }}

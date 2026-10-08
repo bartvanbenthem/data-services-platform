@@ -7,6 +7,7 @@ import { ResponseError } from '@backstage/errors';
 import type {
   BucketDetails,
   BucketSummary,
+  ClusterConnection,
   LocationHealth,
   LocationSpec,
   LocationSummary,
@@ -110,6 +111,8 @@ export interface CnpgApi {
     request: PromotionRequest & { dryRun?: boolean },
   ): Promise<PostgresCluster>;
   getPodLogs(namespace: string, name: string, request: PodLogsRequest): Promise<PodLogs>;
+  /** The app connection URI (password included) via the external load balancer. */
+  getConnection(namespace: string, name: string): Promise<ClusterConnection>;
   /** Creates a new cluster in `project` from a backup folder; the source is only read. */
   restoreCluster(project: string, request: RestoreRequest): Promise<PostgresCluster>;
   listProjects(): Promise<ProjectSummary[]>;
@@ -199,6 +202,10 @@ export class CnpgClient implements CnpgApi {
     if (request.tailLines) query.set('tailLines', String(request.tailLines));
     if (request.previous) query.set('previous', 'true');
     return this.#request<PodLogs>(`/clusters/${enc(namespace)}/${enc(name)}/logs?${query}`);
+  }
+
+  getConnection(namespace: string, name: string) {
+    return this.#request<ClusterConnection>(`/clusters/${enc(namespace)}/${enc(name)}/connection`);
   }
 
   restoreCluster(project: string, request: RestoreRequest) {
