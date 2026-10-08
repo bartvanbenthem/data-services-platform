@@ -16,13 +16,8 @@ them:
 - **Multi-cluster:** databases run in any number of Kubernetes clusters (**locations**), all
   managed from one control plane.
 
-> **Scope.** For now the platform offers one data service: **PostgreSQL with CNPG**. Other engines
-> (caches, message queues, document stores, ...) are out of scope. The layered design (control
-> plane, locations, Projects) leaves room for them later, but nothing here is built or tested for
-> them.
 
 ## Architecture
-
 
 The platform has three layers. A **control plane** cluster runs the APIs (Crossplane) and the portal
 (Backstage), but no databases. The PostgreSQL clusters run in **locations**, which are other
