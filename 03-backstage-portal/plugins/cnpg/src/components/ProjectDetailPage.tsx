@@ -23,6 +23,7 @@ import {
   useTable,
 } from '@backstage/ui';
 import {
+  type BackupReachability,
   cnpgClusterCreatePermission,
   cnpgProjectDeletePermission,
   cnpgProjectUpdatePermission,
@@ -35,7 +36,17 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import { clusterRouteRef, createClusterRouteRef, editProjectRouteRef, projectsRouteRef } from '../routes';
-import { ErrorAlert, Fields, HealthBadge, Mono, Panel, ProjectHealthBadge } from './common';
+import {
+  age,
+  ErrorAlert,
+  Fields,
+  type Health,
+  HealthBadge,
+  Mono,
+  Panel,
+  ProjectHealthBadge,
+  StatusDot,
+} from './common';
 
 type Row = PostgresClusterSummary & { id: string };
 
@@ -112,6 +123,76 @@ function prometheusField(summary: ProjectSummary, url?: string): ReactNode {
   if (url) return <Mono>{url}</Mono>;
   return summary.prometheus ? 'provisioning' : 'disabled';
 }
+
+const REACHABILITY: Record<BackupReachability['state'], { health: Health; label: string }> = {
+  Reachable: { health: 'healthy', label: 'Reachable' },
+  Unreachable: { health: 'unreachable', label: 'Unreachable' },
+  Checking: { health: 'progressing', label: 'Checking again' },
+  Pending: { health: 'progressing', label: 'Not checked yet' },
+};
+
+/**
+ * Per location, whether it reaches the backup bucket: WAL archiving runs in
+ * the locations, so each one checks from there, with its own keys.
+ */
+const BackupReachabilityPanel = ({ project }: { project: ProjectSummary }) => {
+  const bucket = project.backupBucket!;
+  return (
+    <Panel title="Backup bucket reachability">
+      <Flex direction="column" gap="3">
+        {project.locations.map(location => {
+          const site = location === project.protectedLocation ? 'protected' : 'recovery';
+          const r = bucket.reachability.find(x => x.location === location);
+          const mark = r ? REACHABILITY[r.state] : undefined;
+          let detail: ReactNode;
+          if (!r) {
+            detail = bucket.ready
+              ? 'The check starts with the next reconcile.'
+              : 'The check starts once the bucket and this location\'s keys are in place.';
+          } else if (r.state === 'Reachable') {
+            detail = `Wrote, read back and deleted a test object ${age(r.lastSuccessTime)} ago.`;
+          } else if (r.state === 'Pending') {
+            detail = 'The first check runs within minutes.';
+          } else {
+            detail = (
+              <>
+                {r.state === 'Unreachable' ? `Last check ${age(r.lastCheckTime)} ago failed` : 'The last check failed'}
+                {r.lastSuccessTime ? `; last success ${age(r.lastSuccessTime)} ago` : '; it never succeeded'}.
+                {r.detail && (
+                  <>
+                    <br />
+                    <Mono>{r.detail}</Mono>
+                  </>
+                )}
+              </>
+            );
+          }
+          return (
+            <Flex key={location} direction="column" gap="1">
+              <Flex gap="3" align="center">
+                <Text weight="bold">
+                  {location} ({site})
+                </Text>
+                {mark ? (
+                  <StatusDot health={mark.health} label={mark.label} />
+                ) : (
+                  <StatusDot health="progressing" label="Waiting" />
+                )}
+              </Flex>
+              <Text variant="body-small" color="secondary" style={{ overflowWrap: 'anywhere' }}>
+                {detail}
+              </Text>
+            </Flex>
+          );
+        })}
+        <Text variant="body-x-small" color="secondary">
+          The backup-check CronJob in each location's {project.name} namespace tests what WAL archiving
+          (write) and a replica cluster (read) need, every few minutes.
+        </Text>
+      </Flex>
+    </Panel>
+  );
+};
 
 /**
  * Deletes an empty project; while it has clusters it only says so (the
@@ -335,6 +416,9 @@ export const ProjectDetailPage = () => {
                 />
               </Panel>
             </Grid.Root>
+            {summary.backupBucket && summary.locations.length > 0 && (
+              <BackupReachabilityPanel project={summary} />
+            )}
             <Panel title="PostgreSQL clusters">
               <ClusterTable clusters={value.clusters} />
             </Panel>

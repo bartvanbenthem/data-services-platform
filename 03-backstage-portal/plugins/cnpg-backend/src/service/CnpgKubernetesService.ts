@@ -13,6 +13,7 @@ import {
 } from '@backstage/errors';
 import {
   ApiException,
+  BatchV1Api,
   CoreV1Api,
   CustomObjectsApi,
   KubeConfig,
@@ -436,6 +437,50 @@ export class CnpgKubernetesService {
       this.#logger.info(`Patched Project ${name}: ${JSON.stringify(spec)}`);
     }
     return result as unknown as Project;
+  }
+
+  /**
+   * Why a project's backup check last failed in a location (the Project
+   * composition's CronJob backup-check there): the tail of its newest pod's
+   * log, why that pod never started, or, when the pod is gone, its Job's
+   * failure.
+   */
+  async backupCheckDetail(
+    project: string,
+    location: string,
+    kubeConfigFor: LocationKubeConfig,
+  ): Promise<string | undefined> {
+    const kc = await this.#kubeConfig(location, kubeConfigFor);
+    const core = kc.makeApiClient(CoreV1Api);
+    const pods = await this.#call(() =>
+      core.listNamespacedPod({ namespace: project, labelSelector: 'platform.cncp.nl/check=backup' }),
+    );
+    const newest = <T extends { metadata?: { creationTimestamp?: Date } }>(items: T[]) =>
+      items.sort(
+        (a, b) =>
+          (b.metadata?.creationTimestamp?.getTime() ?? 0) - (a.metadata?.creationTimestamp?.getTime() ?? 0),
+      )[0];
+    const pod = newest(pods.items);
+    if (pod) {
+      const waiting = pod.status?.containerStatuses?.[0]?.state?.waiting;
+      if (waiting?.reason) return `${waiting.reason}: ${waiting.message ?? ''}`.trim();
+      const text = await this.#call(() =>
+        core.readNamespacedPodLog({
+          namespace: project,
+          name: pod.metadata?.name ?? '',
+          tailLines: 5,
+          limitBytes: 16 * 1024,
+        }),
+      );
+      if (text?.trim()) return text.trim();
+    }
+    const jobs = await this.#call(() =>
+      kc.makeApiClient(BatchV1Api).listNamespacedJob({ namespace: project }),
+    );
+    const job = newest(
+      jobs.items.filter(j => j.metadata?.ownerReferences?.some(o => o.kind === 'CronJob' && o.name === 'backup-check')),
+    );
+    return job?.status?.conditions?.find(c => c.type === 'Failed' && c.status === 'True')?.message;
   }
 
   async namespaces(): Promise<string[]> {

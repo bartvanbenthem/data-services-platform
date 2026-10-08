@@ -82,7 +82,7 @@ for api in "${APIS[@]}"; do
       # no CRD to validate against.
       python3 -I - "${out}" "${out}.objects" <<'EOF'
 import sys, yaml
-CORE = {"v1", "rbac.authorization.k8s.io/v1", "networking.k8s.io/v1", "apiregistration.k8s.io/v1"}
+CORE = {"v1", "rbac.authorization.k8s.io/v1", "networking.k8s.io/v1", "apiregistration.k8s.io/v1", "batch/v1"}
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") != "Result"]
 docs += [d["spec"]["forProvider"]["manifest"] for d in list(docs) if d.get("kind") == "Object"]
 yaml.safe_dump_all([d for d in docs if d.get("apiVersion") not in CORE], open(sys.argv[2], "w"))

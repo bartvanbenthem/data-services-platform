@@ -36,7 +36,7 @@ import {
 } from '@internal/backstage-plugin-cnpg-common';
 import { CnpgKubernetesService } from './service/CnpgKubernetesService';
 import { MAX_KUBECONFIG_BYTES } from './service/kubeconfig';
-import { LocationService } from './service/LocationService';
+import { LocationService, withTimeout } from './service/LocationService';
 
 // DNS-1123 label, short enough that CNPG's derived names (<name>-pooler-rw,
 // <name>-1, ...) stay within Kubernetes' limits.
@@ -323,7 +323,18 @@ export async function createRouter(options: {
     const parsed = z.object({ name }).safeParse(req.params);
     if (!parsed.success) throw new InputError(parsed.error.toString());
     const resource = await k8s.getProject(parsed.data.name);
-    res.json({ summary: summarizeProject(resource), resource });
+    const summary = summarizeProject(resource);
+    // Why a location can't reach the backup bucket is in its check job's log there.
+    await Promise.all(
+      (summary.backupBucket?.reachability ?? [])
+        .filter(r => r.state === 'Unreachable')
+        .map(async r => {
+          r.detail = await withTimeout(
+            k8s.backupCheckDetail(resource.metadata.name, r.location, l => locations.kubeConfig(l)),
+          ).catch(e => `couldn't read the check's log in ${r.location}: ${(e as Error).message}`);
+        }),
+    );
+    res.json({ summary, resource });
   });
 
   router.post('/projects', async (req, res) => {

@@ -39,6 +39,9 @@
 #                                         control plane
 #   RoleBinding per spec.access entry
 #   ResourceQuota + LimitRange            only with spec.quota
+#   Secret backup-check-s3 + CronJob      with a backup bucket: the location's keys, and every
+#     backup-check                        few minutes a write, read and delete of a test object
+#                                         from there (status.backup.reachability)
 #
 # Cluster-wide settings come from the EnvironmentConfig "project-defaults"
 # (example: ../../examples/project-defaults.yaml); every key is optional and
@@ -562,6 +565,141 @@ spec:
             {{- end }}
             {{- end }}
 
+            {{- /* ---- backup bucket reachability: WAL archiving runs here, so it is
+                 checked from here, with this location's keys, every few minutes.
+                 .backupCheck = dict endpoint, bucket, image, schedule; empty until
+                 the bucket and this location's keys exist. ---- */}}
+            {{- $check := .backupCheck | default (dict) }}
+            {{- $checkState := dict }}
+            {{- if and $check (not $local) }}
+            ---
+            # This location's S3 keys, copied from backup-s3-<location> on the control plane.
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: backup-check-s3
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "backup-check-s3" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "backup-check-s3" }}"True"{{ else }}"False"{{ end }}
+                platform.cncp.nl/copy-from: {{ printf "%s/backup-s3-%s" $ns $m.location }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            ---
+            # Writes, reads back and deletes platform-check/<location> in the bucket,
+            # what WAL archiving (write) and a replica cluster (read) need. The
+            # result is the CronJob's last schedule vs. last success; the job's
+            # log says why it failed.
+            apiVersion: batch/v1
+            kind: CronJob
+            metadata:
+              name: backup-check
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "backup-check" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "backup-check" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              schedule: {{ $check.schedule | quote }}
+              concurrencyPolicy: Forbid
+              successfulJobsHistoryLimit: 1
+              failedJobsHistoryLimit: 1
+              jobTemplate:
+                spec:
+                  backoffLimit: 0
+                  activeDeadlineSeconds: 120
+                  template:
+                    metadata:
+                      labels:
+                        {{- range $k, $v := $labels }}
+                        {{ $k }}: {{ $v | quote }}
+                        {{- end }}
+                        platform.cncp.nl/check: backup
+                    spec:
+                      restartPolicy: Never
+                      automountServiceAccountToken: false
+                      securityContext:
+                        runAsNonRoot: true
+                        seccompProfile:
+                          type: RuntimeDefault
+                      containers:
+                        - name: check
+                          image: {{ $check.image | quote }}
+                          command: [sh, -c]
+                          args:
+                            - |
+                              set -u
+                              key="platform-check/${LOCATION}"
+                              url="${S3_ENDPOINT%/}/${S3_BUCKET}/${key}"
+                              s3() {
+                                method=$1; shift
+                                code=$(curl -sS -o /tmp/body -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+                                  --aws-sigv4 "aws:amz:${REGION:-us-east-1}:s3" --user "${ACCESS_KEY_ID}:${ACCESS_SECRET_KEY}" \
+                                  -H 'x-amz-content-sha256: UNSIGNED-PAYLOAD' -X "$method" "$@" "$url" 2>/tmp/err) \
+                                  || { echo "$method $url: $(cat /tmp/err)"; return 1; }
+                                case $code in 2??) return 0 ;; esac
+                                echo "$method $url: HTTP $code $(sed -n 's:.*<Code>\(.*\)</Code>.*:\1:p' /tmp/body)"
+                                return 1
+                              }
+                              stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                              s3 PUT --data-binary "$stamp" || exit 1
+                              s3 GET || exit 1
+                              [ "$(cat /tmp/body)" = "$stamp" ] || { echo "GET $url: read back something else than was written"; exit 1; }
+                              s3 DELETE || echo "warning: could not delete the test object"
+                              echo "ok: wrote, read back and deleted s3://${S3_BUCKET}/${key} via ${S3_ENDPOINT}"
+                          env:
+                            - name: LOCATION
+                              value: {{ $m.location | quote }}
+                            - name: S3_ENDPOINT
+                              value: {{ $check.endpoint | quote }}
+                            - name: S3_BUCKET
+                              value: {{ $check.bucket | quote }}
+                            {{- range $k := list "ACCESS_KEY_ID" "ACCESS_SECRET_KEY" "REGION" }}
+                            - name: {{ $k }}
+                              valueFrom:
+                                secretKeyRef:
+                                  name: backup-check-s3
+                                  key: {{ $k }}
+                                  {{- if eq $k "REGION" }}
+                                  optional: true
+                                  {{- end }}
+                            {{- end }}
+                          resources:
+                            requests:
+                              cpu: 10m
+                              memory: 16Mi
+                            limits:
+                              memory: 64Mi
+                          securityContext:
+                            allowPrivilegeEscalation: false
+                            readOnlyRootFilesystem: true
+                            capabilities:
+                              drop: [ALL]
+                          volumeMounts:
+                            - name: tmp
+                              mountPath: /tmp
+                      volumes:
+                        - name: tmp
+                          emptyDir:
+                            sizeLimit: 1Mi
+            {{- /* Unknown until the first run; Checking while one runs after a failure. */}}
+            {{- $cj := dig "backup-check" "resource" "status" (dict) $observed }}
+            {{- $scheduled := $cj.lastScheduleTime | default "" }}
+            {{- $succeeded := $cj.lastSuccessfulTime | default "" }}
+            {{- $state := "Pending" }}
+            {{- if and $succeeded (not (lt $succeeded $scheduled)) }}{{ $state = "Reachable" }}
+            {{- else if $cj.active }}{{ $state = "Checking" }}
+            {{- else if $scheduled }}{{ $state = "Unreachable" }}{{ end }}
+            {{- $checkState = dict "state" $state }}
+            {{- with $scheduled }}{{ $_ := set $checkState "lastCheckTime" . }}{{ end }}
+            {{- with $succeeded }}{{ $_ := set $checkState "lastSuccessTime" . }}{{ end }}
+            {{- end }}
+
             {{- $waiting := list }}
             {{- if not $nsReady }}{{ $waiting = append $waiting "namespace" }}{{ end }}
             {{- if and $promEnabled (not $promReady) }}{{ $waiting = append $waiting "Prometheus" }}{{ end }}
@@ -570,6 +708,7 @@ spec:
             ---
             kind: LocationStatus
             waiting: {{ toJson $waiting }}
+            backupCheck: {{ toJson $checkState }}
             {{- end }}
 
             {{- /* ================= top level ================= */}}
@@ -668,6 +807,21 @@ spec:
             {{- end }}
             {{- /* Objects live in the project namespace here: none before it exists. */}}
             {{- $hubNs := index $live "namespace" }}
+            {{- /* ---- what each location's backup check needs: the bucket, and its keys
+                 unpacked (backup-s3-<location>, below) ---- */}}
+            {{- $checks := dict }}
+            {{- $checkCfg := dig "backup" "check" (dict) $env }}
+            {{- $bucketName := dig "backup-bucket" "resource" "status" "bucketName" "" $observed }}
+            {{- if and $bucketOn $hubNs (dig "enabled" true $checkCfg) $bucketName }}
+            {{- range $loc := $siteLocations }}
+            {{- with dig (printf "cosi-%s" $loc) "items" (list) $extra }}
+            {{- $s3 := dig "spec" "secretS3" (dict) (dig "resource" "data" "BucketInfo" "" (first .) | b64dec | fromJson) }}
+            {{- if and $s3.endpoint $s3.accessKeyID $s3.accessSecretKey }}
+            {{- $_ := set $checks $loc (dict "endpoint" $s3.endpoint "bucket" $bucketName "image" (dig "image" "curlimages/curl:8.16.0" $checkCfg) "schedule" (dig "schedule" "*/5 * * * *" $checkCfg)) }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
 
             {{- /* ================= emit every location's objects ================= */}}
             {{- $statuses := list }}
@@ -676,7 +830,7 @@ spec:
             {{- range $k, $v := $live }}{{ if hasPrefix $m.prefix $k }}{{ $_ := set $mobs (trimPrefix $m.prefix $k) $v }}{{ end }}{{ end }}
             {{- $_ := set $m "observed" $mobs }}
             {{- $remote := ne $m.location "local" }}
-            {{- $docs := include "location" (dict "xr" $xr "env" $env "member" $m "remoteWriteUrl" $rwUrl "remoteWriteHost" $rwHost "unschedulable" $unschedulable "backupBucket" $bucketOn) }}
+            {{- $docs := include "location" (dict "xr" $xr "env" $env "member" $m "remoteWriteUrl" $rwUrl "remoteWriteHost" $rwHost "unschedulable" $unschedulable "backupBucket" $bucketOn "backupCheck" (index $checks $m.location)) }}
             {{- range $doc := splitList "\n---\n" (printf "\n%s" $docs) }}
             {{- $obj := fromYaml $doc }}
             {{- if and $obj (eq ($obj.kind | default "") "LocationStatus") }}
@@ -684,7 +838,7 @@ spec:
             {{- if and $remote (not $hubNs) }}{{ $waiting = list "the project namespace on the control plane" }}{{ end }}
             {{- $problem := "" }}
             {{- if and $remote (not (hasKey $registered $m.location)) }}{{ $problem = printf "no Location %s; register the cluster first" $m.location }}{{ end }}
-            {{- $statuses = append $statuses (dict "location" $m.location "site" $m.site "waiting" $waiting "problem" $problem) }}
+            {{- $statuses = append $statuses (dict "location" $m.location "site" $m.site "waiting" $waiting "problem" $problem "backupCheck" ($obj.backupCheck | default (dict))) }}
             {{- else if and $obj (hasKey $obj "kind") (or (not $remote) $hubNs) }}
             {{- $ann := $obj.metadata.annotations }}
             {{- $key := printf "%s%s" $m.prefix (get $ann "gotemplating.fn.crossplane.io/composition-resource-name") }}
@@ -695,7 +849,8 @@ spec:
             {{- else }}
             {{- $ready := get $ann "gotemplating.fn.crossplane.io/ready" }}
             {{- $orphan := eq (get $ann "platform.cncp.nl/orphan") "true" }}
-            {{- range $a := list "gotemplating.fn.crossplane.io/composition-resource-name" "gotemplating.fn.crossplane.io/ready" "platform.cncp.nl/orphan" }}{{ $_ := unset $ann $a }}{{ end }}
+            {{- $copyFrom := get $ann "platform.cncp.nl/copy-from" }}
+            {{- range $a := list "gotemplating.fn.crossplane.io/composition-resource-name" "gotemplating.fn.crossplane.io/ready" "platform.cncp.nl/orphan" "platform.cncp.nl/copy-from" }}{{ $_ := unset $ann $a }}{{ end }}
             {{- if not $ann }}{{ $_ := unset $obj.metadata "annotations" }}{{ end }}
             ---
             apiVersion: kubernetes.m.crossplane.io/v1alpha1
@@ -720,6 +875,19 @@ spec:
               # Never delete the namespace in another location: databases may
               # still run there (no Delete in the management policies).
               managementPolicies: [Observe, Create, Update, LateInitialize]
+              {{- end }}
+              {{- with $copyFrom }}
+              {{- $from := splitList "/" . }}
+              # The Secret's data comes from the control plane, never through this spec.
+              references:
+                {{- range $field := list "data" "type" }}
+                - patchesFrom:
+                    apiVersion: v1
+                    kind: Secret
+                    name: {{ last $from }}
+                    namespace: {{ first $from }}
+                    fieldPath: {{ $field }}
+                {{- end }}
               {{- end }}
               forProvider:
                 manifest:
@@ -926,6 +1094,13 @@ spec:
                   {{- range $loc, $secret := . }}
                   {{ $loc }}: {{ $secret }}
                   {{- end }}
+                {{- end }}
+                {{- /* Informational: an unreachable bucket doesn't make the Project unready. */}}
+                {{- $reach := list }}
+                {{- range $st := rest $statuses }}{{ with $st.backupCheck }}{{ $reach = append $reach (merge (dict "location" $st.location) .) }}{{ end }}{{ end }}
+                {{- with $reach }}
+                reachability:
+                  {{- toYaml . | nindent 18 }}
                 {{- end }}
               {{- end }}
               {{- if $promEnabled }}

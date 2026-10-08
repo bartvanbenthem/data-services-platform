@@ -302,6 +302,24 @@ spec:
                       description: Per location, the Secret in that namespace with its S3 keys (ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION).
                       additionalProperties:
                         type: string
+                    reachability:
+                      type: array
+                      description: >-
+                        Per location, whether it reaches the bucket: a CronJob there (backup-check in
+                        the project namespace) writes, reads back and deletes platform-check/<location>
+                        with that location's keys every few minutes. Its last failed job's log says why.
+                      items:
+                        type: object
+                        properties:
+                          location:
+                            type: string
+                          state:
+                            type: string
+                            description: Pending (no check yet), Reachable, Unreachable (the last check failed) or Checking (one runs after a failure).
+                          lastCheckTime:
+                            type: string
+                          lastSuccessTime:
+                            type: string
                 prometheus:
                   type: object
                   properties:

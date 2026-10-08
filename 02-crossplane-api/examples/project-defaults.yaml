@@ -55,3 +55,12 @@ data:
   #     driverName: cloudian-cosi-driver
   #     parameters: {}                     # driver-specific BucketClass parameters
   #     bucketAccessClassName: backups-keys
+  #   # Each location checks every few minutes that it reaches the bucket
+  #   # (Project status.backup.reachability, shown in the portal): a CronJob
+  #   # there writes, reads back and deletes platform-check/<location>. The
+  #   # image needs sh and curl >= 7.75 (SigV4); mirror it for air-gapped
+  #   # locations.
+  #   check:
+  #     enabled: true
+  #     image: curlimages/curl:8.16.0
+  #     schedule: "*/5 * * * *"

@@ -258,6 +258,7 @@ The Project composition then composes:
 | `BucketClaim backups` | The bucket (`spec.backup.bucket: false` opts a Project out) |
 | `BucketAccess backups-<location>` | One per site: each location gets keys of its own, so one site's access can be revoked without the other's. COSI writes them to Secret `cosi-backups-<location>` |
 | `Secret backup-s3-<location>` | Those keys unpacked from COSI's `BucketInfo` JSON into `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY` and `REGION`, the keys Barman Cloud reads |
+| `Secret backup-check-s3` + `CronJob backup-check`, in each location | That location's keys, and every few minutes (`backup.check.schedule`, default `*/5 * * * *`) a write, read-back and delete of `platform-check/<location>` in the bucket, from the project namespace there: the network path and keys WAL archiving and a replica cluster use. Image `backup.check.image` (default `curlimages/curl:8.16.0`; needs `sh` and curl >= 7.75), `backup.check.enabled: false` turns it off |
 
 All but the class live in the project namespace on the control plane, next to the
 PostgresClusters that use them. The keys are no secret from the project's own users: each
@@ -265,7 +266,11 @@ location's copy has to sit in the project namespace there, next to the CNPG clus
 
 `status.backup` on the Project carries the bucket, endpoint, region, the Barman destination
 (`s3://<bucket>/barman`) and the credentials Secret per location; the Project is ready once the
-bucket is provisioned and every location has its keys. The namespace annotation
+bucket is provisioned and every location has its keys. `status.backup.reachability` has, per
+location, the outcome of its last check: `Pending`, `Reachable`, `Unreachable` or `Checking`
+(a run after a failure), with `lastCheckTime` and `lastSuccessTime`. It is informational: an
+unreachable bucket doesn't make the Project unready. The failed job's log in the location says
+why; the portal's project page shows it. The namespace annotation
 `platform.cncp.nl/backup-bucket` tells the admission policy the Project has one.
 
 A PostgresCluster with `backup.enabled` and no `destinationPath`/`s3Credentials` uses it: each

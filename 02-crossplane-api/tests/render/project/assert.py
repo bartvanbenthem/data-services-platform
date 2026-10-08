@@ -32,6 +32,10 @@ HUB = {"namespace", "prometheus-serviceaccount", "prometheus", "prometheus-pvc",
 # the namespace on the control plane exists (the Objects live in it).
 REMOTE = {"namespace", "prometheus-clusterrolebinding", "prometheus-serviceaccount", "prometheus", "prometheus-pvc"}
 
+# With a backup bucket, in each location: its keys and the CronJob that checks
+# it reaches the bucket.
+CHECK = {"backup-check-s3", "backup-check"}
+
 
 def at(location, keys):
     return {f"location-{location}-{k}" for k in keys}
@@ -57,7 +61,7 @@ EXPECTED = {
                                   "backup-bucket", "backup-access-si-ske-demo", "backup-access-onprem-ams",
                                   "backup-sa-si-ske-demo", "backup-sa-onprem-ams",
                                   "backup-s3-si-ske-demo", "backup-s3-onprem-ams"}
-               | at("si-ske-demo", REMOTE) | at("onprem-ams", REMOTE)},
+               | at("si-ske-demo", REMOTE | CHECK) | at("onprem-ams", REMOTE | CHECK)},
     # No Location "nowhere": no ClusterUsage for it, and the Project isn't ready.
     "unregistered": {"empty": {"namespace"}},
 }
@@ -135,6 +139,31 @@ if case == "bucket":
                   and data == {"ACCESS_KEY_ID": f"FAKEKEYID{i}", "ACCESS_SECRET_KEY": f"fake-secret-{i}",
                                "REGION": "region-1"},
                   f"{loc}: keys unpacked from COSI's BucketInfo: {sorted(data)}")
+            # The check, from the location itself, with that location's keys.
+            obj = composed[f"location-{loc}-backup-check-s3"]
+            check(obj["spec"]["providerConfigRef"]["name"] == loc
+                  and obj["spec"].get("references") == [
+                      {"patchesFrom": {"apiVersion": "v1", "kind": "Secret", "name": f"backup-s3-{loc}",
+                                       "namespace": name, "fieldPath": f}} for f in ("data", "type")]
+                  and "data" not in obj["spec"]["forProvider"]["manifest"]
+                  and "platform.cncp.nl/copy-from" not in obj["spec"]["forProvider"]["manifest"]["metadata"].get("annotations", {}),
+                  f"{loc}: backup-check-s3 must copy backup-s3-{loc} from the control plane: {obj['spec']}")
+            cj = composed[f"location-{loc}-backup-check"]["spec"]["forProvider"]["manifest"]
+            pod = cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+            c = pod["containers"][0]
+            env = {e["name"]: e.get("value") or e["valueFrom"]["secretKeyRef"]["name"] for e in c["env"]}
+            check(cj["kind"] == "CronJob" and cj["metadata"]["namespace"] == name
+                  and cj["spec"]["concurrencyPolicy"] == "Forbid"
+                  and env == {"LOCATION": loc, "S3_ENDPOINT": "https://s3.example.com",
+                              "S3_BUCKET": f"{name}-backups-0f3a", "ACCESS_KEY_ID": "backup-check-s3",
+                              "ACCESS_SECRET_KEY": "backup-check-s3", "REGION": "backup-check-s3"}
+                  and c["securityContext"]["readOnlyRootFilesystem"] and pod["securityContext"]["runAsNonRoot"],
+                  f"{loc}: backup-check CronJob {cj['spec']}")
+        # observe.py reports each CronJob's last run as successful.
+        check(backup.get("reachability") == [
+                  {"location": loc, "state": "Reachable", "lastCheckTime": "2026-01-01T00:05:00Z",
+                   "lastSuccessTime": "2026-01-01T00:05:04Z"} for loc in sites.values()],
+              f"status.backup.reachability {backup.get('reachability')}")
 else:
     check("backup" not in status, "no backup status without COSI classes")
 

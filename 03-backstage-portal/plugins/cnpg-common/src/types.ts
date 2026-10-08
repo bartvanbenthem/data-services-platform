@@ -231,6 +231,21 @@ export function clusterLocations(cluster: PostgresCluster): string[] {
   return [location, recoveryLocation].filter((l): l is string => Boolean(l));
 }
 
+/**
+ * Whether a location reaches the project's backup bucket: a CronJob there
+ * (backup-check in the project namespace) writes, reads back and deletes a
+ * test object with that location's keys every few minutes.
+ */
+export interface BackupReachability {
+  location: string;
+  /** Pending: no check yet. Checking: one runs after a failure. */
+  state: 'Pending' | 'Reachable' | 'Unreachable' | 'Checking';
+  lastCheckTime?: string;
+  lastSuccessTime?: string;
+  /** Why the last check failed, from the job in that location (filled in by the backend). */
+  detail?: string;
+}
+
 export interface ProjectStatus {
   ready?: boolean;
   message?: string;
@@ -248,6 +263,7 @@ export interface ProjectStatus {
     namespace?: string;
     /** Per location, the Secret with its S3 keys. */
     credentials?: Record<string, string>;
+    reachability?: BackupReachability[];
   };
   grafana?: {
     url?: string;
@@ -313,7 +329,7 @@ export interface ProjectSummary {
   /** Both, protected first. */
   locations: string[];
   /** Its COSI backup bucket, which PostgresClusters without a backup destination of their own use. */
-  backupBucket?: { ready: boolean; bucket?: string };
+  backupBucket?: { ready: boolean; bucket?: string; reachability: BackupReachability[] };
   createdAt?: string;
 }
 
@@ -336,7 +352,11 @@ export function summarizeProject(project: Project): ProjectSummary {
     recoveryLocation: spec.locations?.recovery || undefined,
     locations: projectLocations(project),
     backupBucket: status?.backup
-      ? { ready: Boolean(status.backup.ready), bucket: status.backup.bucket || undefined }
+      ? {
+          ready: Boolean(status.backup.ready),
+          bucket: status.backup.bucket || undefined,
+          reachability: status.backup.reachability ?? [],
+        }
       : undefined,
     createdAt: metadata.creationTimestamp,
   };

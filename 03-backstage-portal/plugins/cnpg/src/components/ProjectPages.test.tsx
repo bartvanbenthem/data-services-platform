@@ -129,4 +129,41 @@ describe('ProjectDetailPage', () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith('demo'));
   });
+
+  it('shows per location whether it reaches the backup bucket, and why not', async () => {
+    const ago = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+    const api: Partial<CnpgApi> = {
+      getProject: jest.fn(async () => ({
+        summary: project({
+          protectedLocation: 'ske',
+          recoveryLocation: 'ams',
+          locations: ['ske', 'ams'],
+          backupBucket: {
+            ready: true,
+            bucket: 'demo-backups',
+            reachability: [
+              { location: 'ske', state: 'Reachable' as const, lastCheckTime: ago(120), lastSuccessTime: ago(118) },
+              {
+                location: 'ams',
+                state: 'Unreachable' as const,
+                lastCheckTime: ago(60),
+                detail: 'PUT https://s3.example.com/demo-backups/platform-check/ams: curl: (28) Connection timed out',
+              },
+            ],
+          },
+        }),
+        resource: { apiVersion: 'v1', kind: 'Project', metadata: { name: 'demo' }, spec: {} },
+      })),
+      listClusters: jest.fn(async () => []),
+    };
+    await render(api);
+    expect(await screen.findByText('Backup bucket reachability')).toBeInTheDocument();
+    expect(screen.getByText('ske (protected)')).toBeInTheDocument();
+    expect(screen.getByText('Reachable')).toBeInTheDocument();
+    expect(screen.getByText(/test object 1m ago/)).toBeInTheDocument();
+    expect(screen.getByText('ams (recovery)')).toBeInTheDocument();
+    expect(screen.getByText('Unreachable')).toBeInTheDocument();
+    expect(screen.getByText(/it never succeeded/)).toBeInTheDocument();
+    expect(screen.getByText(/Connection timed out/)).toBeInTheDocument();
+  });
 });

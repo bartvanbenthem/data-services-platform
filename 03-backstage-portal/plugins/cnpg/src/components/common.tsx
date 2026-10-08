@@ -43,15 +43,16 @@ export function projectHealth(p: ProjectSummary): Health {
   return p.ready ? 'healthy' : 'progressing';
 }
 
-export const StatusDot = ({ health: h }: { health: Health }) => {
-  const { label, color } = HEALTH[h];
+/** `label` replaces the health's own word, e.g. "Reachable" for healthy. */
+export const StatusDot = ({ health: h, label }: { health: Health; label?: string }) => {
+  const { color } = HEALTH[h];
   return (
     <Flex align="center" gap="1">
       <span
         aria-hidden="true"
         style={{ width: 8, height: 8, borderRadius: '50%', background: color, flex: 'none' }}
       />
-      <Text variant="body-small">{label}</Text>
+      <Text variant="body-small">{label ?? HEALTH[h].label}</Text>
     </Flex>
   );
 };

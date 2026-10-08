@@ -56,7 +56,8 @@ const PROBE_TIMEOUT_MS = 5_000;
 /** How long a health result is reused before the next request probes again. */
 const HEALTH_TTL_MS = 30_000;
 
-function withTimeout<T>(promise: Promise<T>, ms = PROBE_TIMEOUT_MS): Promise<T> {
+/** Also for the router's calls into locations, which may not answer. */
+export function withTimeout<T>(promise: Promise<T>, ms = PROBE_TIMEOUT_MS): Promise<T> {
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`no answer within ${ms / 1000}s`)), ms);

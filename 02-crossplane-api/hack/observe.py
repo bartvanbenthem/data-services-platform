@@ -7,7 +7,8 @@ usage: hack/observe.py <api> <case>   (writes tests/render/<api>/observed/<case>
 Needs the crossplane CLI and a Docker API, like tests/render/run.sh. Health
 is what the compositions look for: Namespace Active, Prometheus Available,
 Grafana complete/success, Ready=True conditions (CNPG Cluster, Objects),
-a provisioned BucketClaim and a granted BucketAccess (COSI).
+a provisioned BucketClaim and a granted BucketAccess (COSI), a CronJob
+whose last run succeeded.
 """
 import copy
 import os
@@ -45,6 +46,8 @@ def healthy(obj):
         obj["status"] = {"bucketName": f"{obj['metadata']['namespace']}-{obj['metadata']['name']}-0f3a", "bucketReady": True}
     elif kind == "BucketAccess":
         obj["status"] = {"accessGranted": True, "accountID": "e2e"}
+    elif kind == "CronJob":
+        obj["status"] = {"lastScheduleTime": "2026-01-01T00:05:00Z", "lastSuccessfulTime": "2026-01-01T00:05:04Z"}
     return obj
 
 
