@@ -33,4 +33,4 @@ data:
   backup:
     cosi:
       driverName: cloudian-cosi-driver
-      bucketAccessClassName: cosi-test-bucketaccessclass
+      bucketAccessClassName: cloudian-iam

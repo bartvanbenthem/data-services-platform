@@ -32,7 +32,7 @@ Het Secret heeft geen losse keys zoals `AWS_ACCESS_KEY_ID`, maar één key `Buck
 
 ```json
 { "spec": {
-    "bucketName": "cosi-test-bucketclass<uid>",
+    "bucketName": "project-<naam>-backups<uid>",
     "secretS3": { "endpoint": "...", "region": "...",
                   "accessKeyID": "...", "accessSecretKey": "..." } } }
 ```

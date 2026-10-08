@@ -32,7 +32,7 @@ cd "$(dirname "$0")"
 NAMESPACE="${NAMESPACE:-kpn-system}"
 RELEASE=cloudian-cosi-driver
 # Projects' BucketAccesses reference it by name; renaming means re-creating them.
-ACCESS_CLASS=cosi-test-bucketaccessclass
+ACCESS_CLASS=cloudian-iam
 : "${COSI_ACCESS_KEY:?set COSI_ACCESS_KEY}" "${COSI_SECRET_ACCESS_KEY:?set COSI_SECRET_ACCESS_KEY}"
 
 other="$(kubectl get deploy -A -l app.kubernetes.io/name=${RELEASE} \
