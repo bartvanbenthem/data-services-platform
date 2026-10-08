@@ -5,6 +5,8 @@ import {
 } from '@backstage/frontend-plugin-api';
 import { ResponseError } from '@backstage/errors';
 import type {
+  BucketDetails,
+  BucketSummary,
   LocationHealth,
   LocationSpec,
   LocationSummary,
@@ -127,6 +129,11 @@ export interface CnpgApi {
   testLocationUpdate(name: string, request: LocationUpdate): Promise<LocationHealth>;
   updateLocation(name: string, request: LocationUpdate): Promise<LocationSummary>;
   deleteLocation(name: string): Promise<void>;
+  /** Every bucket on the COSI account; configured is false when the backend has no object store. */
+  listBuckets(): Promise<{ configured: boolean; items: BucketSummary[] }>;
+  getBucket(name: string): Promise<BucketDetails>;
+  /** Deletes an orphaned bucket and everything in it; 409 for one in use. */
+  deleteBucket(name: string): Promise<void>;
 }
 
 export const cnpgApiRef = createApiRef<CnpgApi>().with({
@@ -271,6 +278,18 @@ export class CnpgClient implements CnpgApi {
 
   async deleteLocation(name: string) {
     await this.#request(`/locations/${enc(name)}`, { method: 'DELETE' });
+  }
+
+  listBuckets() {
+    return this.#request<{ configured: boolean; items: BucketSummary[] }>('/buckets');
+  }
+
+  getBucket(name: string) {
+    return this.#request<BucketDetails>(`/buckets/${enc(name)}`);
+  }
+
+  async deleteBucket(name: string) {
+    await this.#request(`/buckets/${enc(name)}`, { method: 'DELETE' });
   }
 
   async #request<T>(path: string, init?: RequestInit): Promise<T> {

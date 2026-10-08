@@ -48,6 +48,7 @@ const RESERVED = [
   'default',
   'projects',
   'locations',
+  'buckets',
   'crossplane-system',
   'cnpg-system',
   'cnpg-locations',

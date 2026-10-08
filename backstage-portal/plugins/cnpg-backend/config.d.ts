@@ -32,6 +32,21 @@ export interface Config {
        */
       namespace?: string;
     };
+    /**
+     * The object store account COSI provisions buckets with, for the Buckets
+     * page. Unset: the page says so and lists nothing.
+     */
+    buckets?: {
+      /** S3 endpoint, e.g. https://s3-eu.ring1.kos.kpn.com. */
+      endpoint: string;
+      /** Signing region. Defaults to us-east-1. */
+      region?: string;
+      /**
+       * The COSI driver's credentials Secret (keys S3_ACCESS_KEY and
+       * S3_SECRET_KEY). Defaults to kpn-system/cloudian-cosi-secret.
+       */
+      credentialsSecret?: { namespace?: string; name?: string };
+    };
     catalog?: {
       /** Owner for PostgresClusters without a backstage.io/owner label. */
       defaultOwner?: string;

@@ -8,6 +8,7 @@ import {
   CnpgKubernetesService,
   cnpgKubernetesServiceRef,
 } from './service/CnpgKubernetesService';
+import { BucketService, bucketServiceRef } from './service/BucketService';
 import { LocationService, locationServiceRef } from './service/LocationService';
 import { PostgresCluster, Project } from '@internal/backstage-plugin-cnpg-common';
 
@@ -99,10 +100,30 @@ function fakeLocations() {
   };
 }
 
+const orphan = {
+  name: 'project-old-backups2ebf90a9-7d23-42fb-9739-f775abe51b06',
+  state: 'orphaned',
+  formerProject: 'old',
+  usage: { objects: 3, bytes: 1024 },
+};
+
+function fakeBuckets(configured = true) {
+  return {
+    configured,
+    list: jest.fn(async () => [orphan]),
+    get: jest.fn(async (name: string) => {
+      if (name === orphan.name) return { summary: orphan, endpoint: 'https://s3.example.com', folders: [] };
+      throw new NotFoundError(`Bucket ${name} not found`);
+    }),
+    delete: jest.fn(async () => undefined),
+  };
+}
+
 async function start(
   k8s: ReturnType<typeof fakeK8s>,
   allow = true,
   locations = fakeLocations(),
+  buckets = fakeBuckets(),
 ) {
   const { server } = await startTestBackend({
     features: [
@@ -116,6 +137,11 @@ async function start(
         service: locationServiceRef,
         deps: {},
         factory: () => locations as unknown as LocationService,
+      }),
+      createServiceFactory({
+        service: bucketServiceRef,
+        deps: {},
+        factory: () => buckets as unknown as BucketService,
       }),
       mockServices.permissions.factory({
         result: allow ? AuthorizeResult.ALLOW : AuthorizeResult.DENY,
@@ -704,5 +730,50 @@ describe('cnpg backend', () => {
     const patched = await request(server).patch('/api/cnpg/projects/demo').send({ spec: {} });
     expect(patched.status).toBe(403);
     expect(k8s.patchProject).not.toHaveBeenCalled();
+  });
+  describe('buckets', () => {
+    it('lists the buckets on the account', async () => {
+      const server = await start(fakeK8s());
+      const res = await request(server).get('/api/cnpg/buckets');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ configured: true, items: [orphan] });
+    });
+
+    it('says so when no object store is configured', async () => {
+      const buckets = fakeBuckets(false);
+      const server = await start(fakeK8s(), true, fakeLocations(), buckets);
+      const res = await request(server).get('/api/cnpg/buckets');
+      expect(res.body).toEqual({ configured: false, items: [] });
+      expect(buckets.list).not.toHaveBeenCalled();
+    });
+
+    it('shows one bucket, 404 for an unknown one', async () => {
+      const server = await start(fakeK8s());
+      expect((await request(server).get(`/api/cnpg/buckets/${orphan.name}`)).body.summary).toEqual(orphan);
+      expect((await request(server).get('/api/cnpg/buckets/nope-bucket')).status).toBe(404);
+    });
+
+    it('deletes a bucket', async () => {
+      const buckets = fakeBuckets();
+      const server = await start(fakeK8s(), true, fakeLocations(), buckets);
+      const res = await request(server).delete(`/api/cnpg/buckets/${orphan.name}`);
+      expect(res.status).toBe(200);
+      expect(buckets.delete).toHaveBeenCalledWith(orphan.name);
+    });
+
+    it('rejects an invalid bucket name', async () => {
+      const buckets = fakeBuckets();
+      const server = await start(fakeK8s(), true, fakeLocations(), buckets);
+      expect((await request(server).delete('/api/cnpg/buckets/UPPER_case')).status).toBe(400);
+      expect(buckets.delete).not.toHaveBeenCalled();
+    });
+
+    it('needs the bucket permissions', async () => {
+      const buckets = fakeBuckets();
+      const server = await start(fakeK8s(), false, fakeLocations(), buckets);
+      expect((await request(server).get('/api/cnpg/buckets')).status).toBe(403);
+      expect((await request(server).delete(`/api/cnpg/buckets/${orphan.name}`)).status).toBe(403);
+      expect(buckets.delete).not.toHaveBeenCalled();
+    });
   });
 });

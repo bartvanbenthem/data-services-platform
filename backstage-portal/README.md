@@ -5,7 +5,7 @@ A Backstage app (1.55, new frontend system) for creating Projects and deploying 
 control plane, next to Crossplane; the databases run in the locations, which it reads through
 their kubeconfigs. It is a CNPG-only portal in KPN
 style: a dark theme, the KPN logo, and a fixed sidebar with Locations, Add location, Projects, New
-project, PostgreSQL, New cluster and Dashboards.
+project, Buckets, PostgreSQL, New cluster and Dashboards.
 
 | Feature | Where |
 |---|---|
@@ -23,11 +23,13 @@ project, PostgreSQL, New cluster and Dashboards.
 | **Projects** page: every Project (namespace + Prometheus + Grafana) with health, owner, cluster count and a Grafana link | `/cnpg/projects` |
 | Project detail: namespace, owner, protected and recovery location (each with its readiness), backup bucket and whether each location reaches it (with the failed check's log), its **backup folders** (the Project's inventory, including clusters deleted since, each with **Restore**), access, quota, deletion protection, Grafana/Prometheus endpoints (and where the locations write their metrics), the clusters in it, **Edit**, **Create cluster here**, **Delete** (once it has no clusters left; type-to-confirm) | `/cnpg/projects/:name` |
 | **Edit project**: owner, description, adding a recovery location, access groups, quota, metrics retention, Prometheus volume size (grow only), Grafana ingress. The locations are read-only once set | `/cnpg/projects/:name/edit` |
+| **Buckets** page: every bucket on the object store account COSI provisions with (the COSI driver's keys), also those nothing uses any more: **In use** (a Project's backup bucket), **COSI claim** (a BucketClaim outside a project) or **Orphaned** (e.g. the retained bucket of a deleted project, named after it); objects, size, last write; summary tiles and a filter. Sizes come from listing the objects (up to 100,000 per bucket, cached a minute) | `/cnpg/buckets` |
+| Bucket detail: what uses it, endpoint, usage, its **folders** (per backup server under `barman/`, with the cluster from the project's inventory), **Delete** for an orphaned bucket only (type-to-confirm; empties it, all versions and unfinished uploads, then deletes it). Backend: `GET /buckets`, `GET /buckets/:name`, `DELETE /buckets/:name` (409 for one in use) | `/cnpg/buckets/:name` |
 | Create-project form with the protected and (optional) recovery location picked from the registered locations, manifest preview and **Validate** | `/cnpg/projects/create` |
 | Create-cluster form with live manifest preview and **Validate** (server-side dry run against the XRD). The cluster's namespace is picked from the Projects, not typed; it runs in that project's protected location, and **Geo replication** (offered when the project has a recovery location) adds a replica cluster there. Backups go to the project's COSI bucket by default when it has one, or to a destination of your own | `/cnpg/create` |
 | Every Project in the catalog as a `Resource` of type `project` (named after the project, owner from `spec.owner`), and every PostgresCluster as a `Resource` of type `postgres-cluster` (owner/system from the `backstage.io/owner` / `backstage.io/system` labels, `dependsOn` its project, a **PostgreSQL** tab) | `plugins/cnpg-backend` catalog module |
 | Software Templates *Project* (action `cnpg:project:create`) and *PostgreSQL cluster (CloudNativePG)* (action `cnpg:postgrescluster:create`, project picked with an `EntityPicker` on `spec.type: project`) | `templates/` |
-| Permissions `cnpg.cluster.{read,create,update,delete,restore,switchover,failover}` (`restore` also needs `create`, and guards a plain create with `spec.restore` too), `cnpg.project.{read,create,update,delete}` and `cnpg.location.{read,create,update,delete}`; the UI hides create/edit/delete when denied | `plugins/cnpg-common` |
+| Permissions `cnpg.cluster.{read,create,update,delete,restore,switchover,failover}` (`restore` also needs `create`, and guards a plain create with `spec.restore` too), `cnpg.project.{read,create,update,delete}`, `cnpg.location.{read,create,update,delete}` and `cnpg.bucket.{read,delete}`; the UI hides create/edit/delete when denied | `plugins/cnpg-common` |
 
 ```
 plugins/cnpg            frontend plugin (pages, entity tab, API client)
@@ -38,7 +40,8 @@ deploy/                 control-plane manifests: RBAC, Backstage's own DB (a CNP
 ```
 
 The backend writes **only** `PostgresCluster`, `Project` and `Location` objects with field manager `backstage-cnpg`
-(plus the locations' kubeconfig Secrets in `cnpg-locations`, see [Locations](#locations)):
+(plus the locations' kubeconfig Secrets in `cnpg-locations`, see [Locations](#locations); the Buckets page
+reads the COSI driver's Secret and deletes orphaned buckets on the object store, see `cnpg.buckets` in `app-config.yaml`):
 server-side apply to create them, a JSON merge patch of just the changed fields to edit them (so settings
 made with kubectl stay). Validation stays in one place, the XRD: API server errors such as
 "synchronousReplicas must be lower than instances" or "volumes can grow but not shrink" are shown in the

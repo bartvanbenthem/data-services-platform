@@ -11,7 +11,8 @@ const isClusterPath = (p: string) =>
     !p.startsWith(`${CNPG}/create`) &&
     !p.startsWith(`${CNPG}/dashboards`) &&
     !p.startsWith(`${CNPG}/projects`) &&
-    !p.startsWith(`${CNPG}/locations`));
+    !p.startsWith(`${CNPG}/locations`) &&
+    !p.startsWith(`${CNPG}/buckets`));
 const isProjectPath = (p: string) =>
   p.startsWith(`${CNPG}/projects`) && !p.startsWith(`${CNPG}/projects/create`);
 const isLocationPath = (p: string) =>
@@ -39,6 +40,7 @@ const sections: Array<{ title: string; items: Item[] }> = [
         to: `${CNPG}/projects/create`,
         isActive: p => p.startsWith(`${CNPG}/projects/create`),
       },
+      { label: 'Buckets', to: `${CNPG}/buckets`, isActive: p => p.startsWith(`${CNPG}/buckets`) },
     ],
   },
   {

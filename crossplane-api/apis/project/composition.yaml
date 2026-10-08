@@ -14,7 +14,8 @@
 #   RoleBinding per spec.access entry
 #   BucketClass project-<name>-backups    COSI, cluster-scoped: deletionPolicy Retain, driver
 #                                         from project-defaults backup.cosi.driverName (not
-#                                         with spec.backup.bucketClassName)
+#                                         with spec.backup.bucketClassName); prj-<16>-<hash>
+#                                         when that leaves no room for the bucket name
 #   BucketClaim backups                   the project's backup bucket (spec.backup)
 #   BucketAccess backups-<location>       one per location: its own S3 keys, which COSI
 #                                         writes to Secret cosi-backups-<location>; with a
@@ -747,7 +748,15 @@ spec:
                  project-defaults bucketClassName is the fallback without a driverName. */}}
             {{- $ownClass := and (eq ($pb.bucketClassName | default "") "") (ne ($cosi.driverName | default "") "") }}
             {{- $bucketClass := $pb.bucketClassName | default ($cosi.bucketClassName | default "") }}
-            {{- if $ownClass }}{{ $bucketClass = printf "project-%s-backups" $name }}{{ end }}
+            {{- /* COSI names the bucket <class><claim UID> (36 characters) and S3 allows 63,
+                 so the class gets 27: project-<name>-backups while it fits, otherwise
+                 prj-<first 16 of name>-<6 hex of sha256(name)>. */}}
+            {{- if $ownClass }}
+            {{- $bucketClass = printf "project-%s-backups" $name }}
+            {{- if gt (len $bucketClass) 27 }}
+            {{- $bucketClass = printf "prj-%s-%s" ($name | trunc 16 | trimSuffix "-") (sha256sum $name | trunc 6) }}
+            {{- end }}
+            {{- end }}
             {{- $accessClass := $pb.bucketAccessClassName | default ($cosi.bucketAccessClassName | default "") }}
             {{- $bucketOn := and (dig "bucket" true $pb) (ne $bucketClass "") (ne $accessClass "") }}
             ---

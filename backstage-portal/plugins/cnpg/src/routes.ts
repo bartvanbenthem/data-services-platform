@@ -75,6 +75,18 @@ export const editLocationRouteRef = createSubRouteRef({
   path: '/locations/:name/edit',
 });
 
+/** /cnpg/buckets -- every bucket on the object store account COSI uses. */
+export const bucketsRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/buckets',
+});
+
+/** /cnpg/buckets/:name -- one bucket and its folders. */
+export const bucketRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/buckets/:name',
+});
+
 /** /cnpg/projects -- the project list. */
 export const projectsRouteRef = createSubRouteRef({
   parent: rootRouteRef,

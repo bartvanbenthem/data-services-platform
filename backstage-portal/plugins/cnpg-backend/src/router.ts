@@ -12,6 +12,8 @@ import express from 'express';
 import Router from 'express-promise-router';
 import { z } from 'zod/v3';
 import {
+  cnpgBucketDeletePermission,
+  cnpgBucketReadPermission,
   cnpgClusterCreatePermission,
   cnpgClusterDeletePermission,
   cnpgClusterFailoverPermission,
@@ -45,6 +47,7 @@ import {
   summarizeProject,
   targetTimeError,
 } from '@internal/backstage-plugin-cnpg-common';
+import { BucketService } from './service/BucketService';
 import { CnpgKubernetesService } from './service/CnpgKubernetesService';
 import { MAX_KUBECONFIG_BYTES } from './service/kubeconfig';
 import { LocationService, withTimeout } from './service/LocationService';
@@ -205,8 +208,9 @@ export async function createRouter(options: {
   config: RootConfigService;
   k8s: CnpgKubernetesService;
   locations: LocationService;
+  buckets: BucketService;
 }): Promise<express.Router> {
-  const { httpAuth, permissions, config, k8s, locations } = options;
+  const { httpAuth, permissions, config, k8s, locations, buckets } = options;
   const router = Router();
   // Uploaded kubeconfigs can carry a few certificates.
   router.use(express.json({ limit: '1mb' }));
@@ -435,6 +439,34 @@ export async function createRouter(options: {
     }
     await k8s.deleteProject(p.data.name);
     res.json({ status: 'deleting' });
+  });
+
+  // Buckets on the object store account COSI uses, also those of deleted
+  // Projects. Only an orphaned one (nothing on the cluster uses it) can go.
+  const bucketName = z.object({ name: z.string().regex(/^[a-z0-9][-a-z0-9.]{1,61}[a-z0-9]$/, 'invalid bucket name') });
+
+  router.get('/buckets', async (req, res) => {
+    await authorize(req, cnpgBucketReadPermission);
+    if (!buckets.configured) {
+      res.json({ configured: false, items: [] });
+      return;
+    }
+    res.json({ configured: true, items: await buckets.list() });
+  });
+
+  router.get('/buckets/:name', async (req, res) => {
+    await authorize(req, cnpgBucketReadPermission);
+    const p = bucketName.safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    res.json(await buckets.get(p.data.name));
+  });
+
+  router.delete('/buckets/:name', async (req, res) => {
+    await authorize(req, cnpgBucketDeletePermission);
+    const p = bucketName.safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    await buckets.delete(p.data.name);
+    res.json({ status: 'deleted' });
   });
 
   router.post('/clusters', async (req, res) => {

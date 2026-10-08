@@ -4,6 +4,7 @@ import {
 } from '@backstage/backend-plugin-api';
 import { cnpgPermissions } from '@internal/backstage-plugin-cnpg-common';
 import { createRouter } from './router';
+import { bucketServiceRef } from './service/BucketService';
 import { cnpgKubernetesServiceRef } from './service/CnpgKubernetesService';
 import { locationServiceRef } from './service/LocationService';
 
@@ -25,6 +26,7 @@ export const cnpgPlugin = createBackendPlugin({
         config: coreServices.rootConfig,
         k8s: cnpgKubernetesServiceRef,
         locations: locationServiceRef,
+        buckets: bucketServiceRef,
       },
       async init({
         httpAuth,
@@ -34,9 +36,10 @@ export const cnpgPlugin = createBackendPlugin({
         config,
         k8s,
         locations,
+        buckets,
       }) {
         permissionsRegistry.addPermissions(cnpgPermissions);
-        httpRouter.use(await createRouter({ httpAuth, permissions, config, k8s, locations }));
+        httpRouter.use(await createRouter({ httpAuth, permissions, config, k8s, locations, buckets }));
         httpRouter.addAuthPolicy({ path: '/health', allow: 'unauthenticated' });
       },
     });

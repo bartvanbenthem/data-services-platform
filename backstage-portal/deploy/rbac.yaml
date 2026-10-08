@@ -1,6 +1,7 @@
 # What the portal's backend may do on the control plane: manage
-# PostgresClusters, create and change Projects, list namespaces, and register
-# locations: Location objects plus their kubeconfigs (bottom). It never
+# PostgresClusters, create and change Projects, list namespaces, register
+# locations: Location objects plus their kubeconfigs (bottom), and read the
+# COSI driver's keys for the Buckets page (bottom). It never
 # touches CNPG objects directly -- every write goes through the
 # PostgresCluster, Project and Location APIs (and so through their XRD
 # schemas). The databases run in the locations: the detail page and the Logs
@@ -42,6 +43,10 @@ rules:
   - apiGroups: [platform.cncp.nl]
     resources: [locations]
     verbs: [get, list, watch, create, update, delete]
+  # COSI's Bucket objects: which buckets on the object store are still in use.
+  - apiGroups: [objectstorage.k8s.io]
+    resources: [buckets]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -84,6 +89,34 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: backstage-cnpg-locations
+subjects:
+  - kind: ServiceAccount
+    name: backstage
+    namespace: backstage
+---
+# Buckets page: the COSI driver's credentials Secret (deps/cosi/install.sh),
+# the account every bucket lives in. Only that one Secret, read-only; the
+# backend deletes buckets with it only when nothing on the cluster uses them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backstage-cnpg-buckets
+  namespace: kpn-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [cloudian-cosi-secret]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backstage-cnpg-buckets
+  namespace: kpn-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backstage-cnpg-buckets
 subjects:
   - kind: ServiceAccount
     name: backstage

@@ -24,6 +24,7 @@
     "postpack": "backstage-cli package postpack"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.350.0",
     "@backstage/backend-defaults": "^0.18.0",
     "@backstage/backend-plugin-api": "^1.10.1",
     "@backstage/catalog-model": "^1.10.1",

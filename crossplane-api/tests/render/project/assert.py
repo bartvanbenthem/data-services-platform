@@ -3,6 +3,7 @@
 usage: assert.py <case> <empty|observed> <render-output.yaml>
 """
 import base64
+import hashlib
 import sys
 
 import yaml
@@ -62,6 +63,9 @@ EXPECTED = {
                                   "backup-sa-si-ske-demo", "backup-sa-onprem-ams",
                                   "backup-s3-si-ske-demo", "backup-s3-onprem-ams"}
                | at("si-ske-demo", REMOTE | CHECK) | at("onprem-ams", REMOTE | CHECK)},
+    # The same with a name too long for project-<name>-backups (see bucket_class).
+    "bucket-long": {"empty": {"namespace", "usage-location-si-ske-demo", "usage-location-onprem-ams",
+                              "backup-bucketclass"}},
     # No Location "nowhere": no ClusterUsage for it, and the Project isn't ready.
     "unregistered": {"empty": {"namespace"}},
 }
@@ -95,18 +99,25 @@ check(ann.get("platform.cncp.nl/unschedulable-locations") == ("si-ske-demo" if c
       "namespace must list the locations closed to new databases for the admission policy")
 
 # --- the COSI backup bucket
-check((ann.get("platform.cncp.nl/backup-bucket") == "true") == (case == "bucket"),
+bucket_case = case in ("bucket", "bucket-long")
+check((ann.get("platform.cncp.nl/backup-bucket") == "true") == bucket_case,
       "namespace must say whether the project has a backup bucket, for the admission policy")
-if case == "bucket":
+# COSI names the bucket <class><claim UID>: the class gets 63 - 36 characters.
+bucket_class = f"project-{name}-backups"
+if len(bucket_class) > 27:
+    bucket_class = f"prj-{name[:16].rstrip('-')}-{hashlib.sha256(name.encode()).hexdigest()[:6]}"
+if bucket_case:
+    check((case == "bucket-long") == bucket_class.startswith("prj-"), f"case {case} must exercise its class form: {bucket_class}")
     cls = composed["backup-bucketclass"]
-    check(cls["kind"] == "BucketClass" and cls["metadata"]["name"] == f"project-{name}-backups"
+    check(len(cls["metadata"]["name"]) <= 27, f"BucketClass name too long for a bucket name: {cls['metadata']['name']}")
+    check(cls["kind"] == "BucketClass" and cls["metadata"]["name"] == bucket_class
           and "namespace" not in cls["metadata"] and cls["deletionPolicy"] == "Retain"
           and cls["driverName"] == "cloudian-cosi-driver" and cls["parameters"] == {"storagePolicy": "replicated-3"},
           f"BucketClass must keep the backups (Retain) and use the driver from project-defaults: {cls}")
     if state == "observed":
         claim = composed["backup-bucket"]
         check(claim["kind"] == "BucketClaim" and claim["metadata"]["name"] == "backups"
-              and claim["spec"] == {"bucketClassName": f"project-{name}-backups", "protocols": ["S3"]},
+              and claim["spec"] == {"bucketClassName": bucket_class, "protocols": ["S3"]},
               f"BucketClaim {claim}")
         for loc in sites.values():
             acc = composed[f"backup-access-{loc}"]

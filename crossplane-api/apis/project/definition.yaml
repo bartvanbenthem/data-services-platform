@@ -66,7 +66,7 @@ spec:
             # (grafana-<name>.<domain>) and part of a ClusterRoleBinding name.
             - rule: "self.metadata.name.matches('^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$')"
               message: Project names are lowercase letters, digits and "-", start with a letter, max 40 characters
-            - rule: "!self.metadata.name.startsWith('kube-') && !(self.metadata.name in ['default', 'projects', 'locations', 'crossplane-system', 'cnpg-system', 'cnpg-locations', 'cert-manager'])"
+            - rule: "!self.metadata.name.startsWith('kube-') && !(self.metadata.name in ['default', 'projects', 'locations', 'buckets', 'crossplane-system', 'cnpg-system', 'cnpg-locations', 'cert-manager'])"
               message: this name is reserved for a system namespace
             # The portal names catalog entities <namespace>--<cluster> for
             # databases and <project> for projects; this keeps them apart.
@@ -129,7 +129,8 @@ spec:
                       type: string
                       description: >-
                         An existing COSI BucketClass to use instead of the project's own
-                        (project-<name>-backups, deletionPolicy Retain, driver from
+                        (project-<name>-backups, or prj-<first 16 of name>-<hash> for a
+                        name over 11 characters, deletionPolicy Retain, driver from
                         project-defaults). Use one with deletionPolicy Retain: a Delete class
                         deletes the bucket, and every backup in it, with the Project.
                       x-kubernetes-validations:

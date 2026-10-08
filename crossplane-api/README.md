@@ -255,7 +255,7 @@ The Project composition then composes:
 
 | Object | What for |
 |---|---|
-| `BucketClass project-<name>-backups` (cluster-scoped) | `deletionPolicy: Retain`, so deleting the Project keeps the bucket and its backups. `spec.backup.bucketClassName` uses an existing class instead (make it Retain too) |
+| `BucketClass project-<name>-backups` (cluster-scoped) | `deletionPolicy: Retain`, so deleting the Project keeps the bucket and its backups. COSI names the bucket `<class><claim UID>` and S3 allows 63 characters, so for a project name over 11 characters the class is `prj-<first 16 of name>-<6 hex of sha256(name)>` instead. `spec.backup.bucketClassName` uses an existing class instead (make it Retain too) |
 | `BucketClaim backups` | The bucket (`spec.backup.bucket: false` opts a Project out) |
 | `BucketAccess backups-<location>` | One per site: each location gets keys of its own, so one site's access can be revoked without the other's. COSI writes them to Secret `cosi-backups-<location>` |
 | `Secret backup-s3-<location>` | Those keys unpacked from COSI's `BucketInfo` JSON into `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY` and `REGION`, the keys Barman Cloud reads |

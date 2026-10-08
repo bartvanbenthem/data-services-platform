@@ -166,6 +166,15 @@ cnpg:
   catalog:
     defaultOwner: group:default/guests
     refreshSeconds: 30
+  # The Buckets page: every bucket on the object store account COSI provisions
+  # with, read with the COSI driver's keys (deps/cosi/install.sh). Leave it out
+  # and the page says no object store is configured.
+  buckets:
+    endpoint: https://s3-eu.ring1.kos.kpn.com
+    region: us-east-01
+    credentialsSecret:
+      namespace: kpn-system
+      name: cloudian-cosi-secret
 
 # see https://backstage.io/docs/permissions/getting-started for more on the permission framework
 permission:

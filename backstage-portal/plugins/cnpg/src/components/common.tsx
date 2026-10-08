@@ -1,5 +1,7 @@
 import { Alert, Button, Card, CardBody, CardHeader, Flex, Grid, Text } from '@backstage/ui';
 import type {
+  BucketState,
+  BucketUsage,
   PostgresClusterSummary,
   ProjectSummary,
 } from '@internal/backstage-plugin-cnpg-common';
@@ -64,6 +66,35 @@ export const HealthBadge = ({ cluster }: { cluster: PostgresClusterSummary }) =>
 export const ProjectHealthBadge = ({ project }: { project: ProjectSummary }) => (
   <StatusDot health={projectHealth(project)} />
 );
+
+const BUCKET_STATE: Record<BucketState, { health: Health; label: string }> = {
+  project: { health: 'healthy', label: 'In use' },
+  cosi: { health: 'progressing', label: 'COSI claim' },
+  orphaned: { health: 'degraded', label: 'Orphaned' },
+};
+
+export const BucketStateBadge = ({ state }: { state: BucketState }) => (
+  <StatusDot health={BUCKET_STATE[state].health} label={BUCKET_STATE[state].label} />
+);
+
+/** 1536 -> "1.5 KiB". */
+export function bytes(n: number): string {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = n;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  return `${i === 0 || value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
+/** Object count and size; "at least" when the backend stopped counting. */
+export function usageText(u?: BucketUsage): { objects: string; size: string } {
+  if (!u) return { objects: '-', size: '-' };
+  const prefix = u.truncated ? '≥ ' : '';
+  return { objects: `${prefix}${u.objects.toLocaleString()}`, size: `${prefix}${bytes(u.bytes)}` };
+}
 
 export function age(timestamp?: string): string {
   if (!timestamp) return '-';

@@ -112,6 +112,24 @@ export const cnpgLocationDeletePermission = createPermission({
   attributes: { action: 'delete' },
 });
 
+/**
+ * List the buckets on the object store account COSI uses (with their size and
+ * folders), including those of deleted Projects.
+ */
+export const cnpgBucketReadPermission = createPermission({
+  name: 'cnpg.bucket.read',
+  attributes: { action: 'read' },
+});
+
+/**
+ * Delete an orphaned bucket (nothing on the cluster uses it) with everything in
+ * it, such as a deleted Project's backups. Can't be undone: platform admins only.
+ */
+export const cnpgBucketDeletePermission = createPermission({
+  name: 'cnpg.bucket.delete',
+  attributes: { action: 'delete' },
+});
+
 export const cnpgPermissions = [
   cnpgClusterReadPermission,
   cnpgClusterCreatePermission,
@@ -128,4 +146,6 @@ export const cnpgPermissions = [
   cnpgLocationCreatePermission,
   cnpgLocationUpdatePermission,
   cnpgLocationDeletePermission,
+  cnpgBucketReadPermission,
+  cnpgBucketDeletePermission,
 ];
