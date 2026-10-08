@@ -62,7 +62,8 @@ export interface PostgresClusterStatus {
   message?: string;
   endpoints?: Record<string, string>;
   secrets?: { app?: string; superuser?: string };
-  backup?: { lastSuccessfulBackup?: string; firstRecoverabilityPoint?: string };
+  /** serverName: the folder the primary archives to, what restore.source.serverName names. */
+  backup?: { serverName?: string; lastSuccessfulBackup?: string; firstRecoverabilityPoint?: string };
   monitoring?: { dashboardUid?: string };
   /** The Project's backup bucket the cluster archives to (no destinationPath of its own), pinned on first use. */
   backupStore?: { destinationPath?: string; endpointURL?: string; namespace?: string; region?: boolean };
@@ -232,6 +233,25 @@ export function clusterLocations(cluster: PostgresCluster): string[] {
 }
 
 /**
+ * A backup folder (Barman server name) in a project's bucket, from the
+ * Project's inventory (status.backup.servers). It stays listed, inactive,
+ * after its cluster is deleted: the bucket keeps the backups.
+ */
+export interface BackupServer {
+  serverName: string;
+  /** The PostgresCluster that archives (or archived) to it. */
+  cluster?: string;
+  location?: string;
+  /** Whether that cluster still archives to it. */
+  active?: boolean;
+  postgresVersion?: number;
+  database?: string;
+  owner?: string;
+  firstRecoverabilityPoint?: string;
+  lastSuccessfulBackup?: string;
+}
+
+/**
  * Whether a location reaches the project's backup bucket: a CronJob there
  * (backup-check in the project namespace) writes, reads back and deletes a
  * test object with that location's keys every few minutes.
@@ -264,6 +284,8 @@ export interface ProjectStatus {
     /** Per location, the Secret with its S3 keys. */
     credentials?: Record<string, string>;
     reachability?: BackupReachability[];
+    /** The backup folders in the bucket, including those of deleted clusters. */
+    servers?: BackupServer[];
   };
   grafana?: {
     url?: string;

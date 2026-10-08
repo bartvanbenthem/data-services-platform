@@ -88,7 +88,8 @@ spec:
 #    platform.cncp.nl/unschedulable-locations. Existing clusters there stay
 #    editable. Backups without a destinationPath of their own go to the
 #    Project's backup bucket, so newly relying on it needs a Project that has
-#    one (annotation platform.cncp.nl/backup-bucket).
+#    one (annotation platform.cncp.nl/backup-bucket). So does a new cluster
+#    restored from it (restore without a destinationPath of its own).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -129,6 +130,9 @@ spec:
       expression: >-
         oldObject != null && has(oldObject.spec.backup) && has(oldObject.spec.backup.enabled)
         && oldObject.spec.backup.enabled && !has(oldObject.spec.backup.destinationPath)
+    - name: restoresFromBucket
+      expression: >-
+        oldObject == null && has(object.spec.restore) && !has(object.spec.restore.source.destinationPath)
   validations:
     - expression: "oldObject != null || variables.protected != ''"
       messageExpression: >-
@@ -148,6 +152,11 @@ spec:
       messageExpression: >-
         'Project ' + namespaceObject.metadata.name + ' has no backup bucket (Project spec.backup, COSI classes in '
         + 'project-defaults); set backup.destinationPath and backup.s3Credentials instead'
+      reason: Forbidden
+    - expression: "!variables.restoresFromBucket || 'platform.cncp.nl/backup-bucket' in variables.annotations"
+      messageExpression: >-
+        'Project ' + namespaceObject.metadata.name + ' has no backup bucket to restore from; set '
+        + 'restore.source.destinationPath and restore.source.s3Credentials instead'
       reason: Forbidden
     - expression: "!variables.geoAdded || !(variables.recovery in variables.closed)"
       messageExpression: >-

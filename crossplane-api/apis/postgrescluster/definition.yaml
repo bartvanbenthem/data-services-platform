@@ -16,6 +16,10 @@
 # spec.geoReplication a CloudNativePG replica cluster runs in the Project's
 # recovery location, fed through the backup object store (distributed
 # topology), ready to take over.
+#
+# Restore: spec.restore creates the cluster from another cluster's backup
+# folder (point in time or latest) instead of an empty database; only at
+# creation, and the source is only read.
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
@@ -77,7 +81,76 @@ spec:
                   message: geoReplication.primarySite can only be recovery while geoReplication is enabled
                 - rule: "!has(self.geoReplication) || !has(self.geoReplication.instances) || !has(self.highAvailability) || !has(self.highAvailability.synchronousReplicas) || self.highAvailability.synchronousReplicas < self.geoReplication.instances"
                   message: highAvailability.synchronousReplicas must be lower than geoReplication.instances
+                - rule: "has(self.restore) == has(oldSelf.restore)"
+                  message: restore can only be set when the cluster is created, and stays
               properties:
+                restore:
+                  type: object
+                  description: >-
+                    Create this cluster from another cluster's backups instead of an empty database
+                    (point-in-time recovery), only when the cluster is created. The source is a
+                    backup folder (a cluster's status.backup.serverName, or one of its Project's
+                    status.backup.servers) in the Project's backup bucket, or in an object store of
+                    its own. It is only read: this cluster archives to a folder of its own
+                    (status.backup.serverName). postgresVersion and database must match the source.
+                  required: [source]
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: restore is immutable
+                  properties:
+                    source:
+                      type: object
+                      required: [serverName]
+                      x-kubernetes-validations:
+                        - rule: has(self.destinationPath) == has(self.s3Credentials)
+                          message: set restore.source.destinationPath and s3Credentials together, or neither to restore from the Project's backup bucket
+                      properties:
+                        serverName:
+                          type: string
+                          description: Backup folder to restore from, e.g. the source cluster's name.
+                          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                          maxLength: 128
+                        destinationPath:
+                          type: string
+                          description: >-
+                            Object store prefix the folder is in, e.g. s3://my-bucket/postgres. Leave it
+                            (and s3Credentials) out for the Project's backup bucket.
+                          pattern: '^s3://.+'
+                        endpointURL:
+                          type: string
+                          description: S3 endpoint for non-AWS object stores.
+                        endpointCA:
+                          type: object
+                          description: Secret holding a CA bundle for a self-signed endpoint.
+                          properties:
+                            secretName:
+                              type: string
+                            key:
+                              type: string
+                              default: ca.crt
+                          required: [secretName]
+                        s3Credentials:
+                          type: object
+                          description: Secret in the same namespace with S3 credentials that can read the folder.
+                          properties:
+                            secretName:
+                              type: string
+                            accessKeyIdKey:
+                              type: string
+                              default: ACCESS_KEY_ID
+                            secretAccessKeyKey:
+                              type: string
+                              default: ACCESS_SECRET_KEY
+                            regionKey:
+                              type: string
+                          required: [secretName]
+                    targetTime:
+                      type: string
+                      format: date-time
+                      description: >-
+                        Recover up to this moment (RFC 3339, e.g. 2026-10-08T09:30:00Z). It must lie after
+                        the source's first recoverability point. Leave it out to replay every archived
+                        WAL file (the latest state).
                 geoReplication:
                   type: object
                   default: {}
@@ -528,6 +601,12 @@ spec:
                 backup:
                   type: object
                   properties:
+                    serverName:
+                      type: string
+                      description: >-
+                        Folder the primary archives to in the backup store, what another cluster's
+                        restore.source.serverName names. A restored cluster gets a new one,
+                        <name>-<first 8 characters of its uid>.
                     lastSuccessfulBackup:
                       type: string
                     firstRecoverabilityPoint:
@@ -545,8 +624,9 @@ spec:
                 backupStore:
                   type: object
                   description: >-
-                    The Project's backup bucket the cluster archives to, pinned on first use (only when
-                    backup.destinationPath is unset).
+                    The Project's backup bucket the cluster archives to or restores from, pinned on
+                    first use (only when backup.destinationPath or restore.source.destinationPath is
+                    unset).
                   properties:
                     destinationPath:
                       type: string

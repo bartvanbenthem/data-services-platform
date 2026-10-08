@@ -320,6 +320,36 @@ spec:
                             type: string
                           lastSuccessTime:
                             type: string
+                    servers:
+                      type: array
+                      description: >-
+                        The backup folders in the bucket (Barman server names), one per PostgresCluster
+                        site that archives there. Entries stay after their cluster is deleted
+                        (active false): the bucket keeps the backups, and a new PostgresCluster can
+                        restore from them (spec.restore.source.serverName).
+                      items:
+                        type: object
+                        properties:
+                          serverName:
+                            type: string
+                          cluster:
+                            type: string
+                            description: The PostgresCluster that archives (or archived) to it.
+                          location:
+                            type: string
+                          active:
+                            type: boolean
+                            description: Whether that cluster still archives to it.
+                          postgresVersion:
+                            type: integer
+                          database:
+                            type: string
+                          owner:
+                            type: string
+                          firstRecoverabilityPoint:
+                            type: string
+                          lastSuccessfulBackup:
+                            type: string
                 prometheus:
                   type: object
                   properties:

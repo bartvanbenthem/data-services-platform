@@ -12,6 +12,10 @@
 #     location and a replica cluster in the recovery location, which replays
 #     the primary's WAL from the object store: data written in the protected
 #     location shows up in the recovery location
+#   - a new PostgresCluster with spec.restore recovers from that cluster's
+#     backup folder up to a point in time (rows written after it are absent),
+#     and archives to a folder of its own; restore can't be added or changed
+#     later
 #   - switching geoReplication.primarySite to recovery demotes the old
 #     primary and promotes the replica cluster with its demotion token
 #     (writes then work there, and the old primary follows)
@@ -345,6 +349,85 @@ echo "row replicated to ${RECOVERY}"
 if psql_in "${R[@]}" "insert into e2e values ('nope')" 2>/dev/null; then
   echo "FAIL: the replica cluster accepted a write"; exit 1
 fi
+
+echo "==> restore: a new PostgresCluster from ledger-db's backup folder, to a point in time"
+psql_in "${P[@]}" "insert into e2e values ('before-target'); select pg_switch_wal();" >/dev/null
+sleep 3
+TARGET="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sleep 3
+psql_in "${P[@]}" "insert into e2e values ('after-target'); select pg_switch_wal();" >/dev/null
+reject "adding restore to an existing cluster" "restore can only be set when the cluster is created" <<YAML
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata: {name: ledger-db, namespace: ${NS}}
+spec:
+  restore: {source: {serverName: ledger-db}}
+YAML
+"${C[@]}" apply -f - <<YAML
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: ledger-copy
+  namespace: ${NS}
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+  # Archives to the same store, in a folder of its own.
+  backup:
+    enabled: true
+    destinationPath: s3://pg-backups/e2e
+    endpointURL: ${S3_ENDPOINT}
+    s3Credentials:
+      secretName: ledger-db-s3
+  restore:
+    source:
+      serverName: ledger-db
+      destinationPath: s3://pg-backups/e2e
+      endpointURL: ${S3_ENDPOINT}
+      s3Credentials:
+        secretName: ledger-db-s3
+    targetTime: "${TARGET}"
+  monitoring:
+    enabled: false
+    grafanaDashboard:
+      enabled: false
+YAML
+if ! "${C[@]}" -n ${NS} wait postgrescluster/ledger-copy --for=condition=Ready --timeout=900s; then
+  "${C[@]}" -n ${NS} get postgrescluster ledger-copy -o yaml
+  "${P[@]}" -n ${NS} get cluster,objectstore,backup,pods || true
+  "${P[@]}" -n ${NS} describe cluster ledger-copy | tail -30 || true
+  "${P[@]}" -n ${NS} logs -l cnpg.io/cluster=ledger-copy --all-containers --tail=40 || true
+  exit 1
+fi
+"${C[@]}" -n ${NS} get postgrescluster ledger-copy
+copy_rows="$(pod="$("${P[@]}" -n ${NS} get cluster ledger-copy -o jsonpath='{.status.currentPrimary}')"; \
+  "${P[@]}" -n ${NS} exec "${pod}" -c postgres -- psql -U postgres -d app -tAc 'select v from e2e order by v' | tr '\n' ' ')"
+echo "restored rows: ${copy_rows}"
+grep -q "before-target" <<<"${copy_rows}" && ! grep -q "after-target" <<<"${copy_rows}" \
+  || { echo "FAIL: the restore didn't stop at ${TARGET}"; exit 1; }
+folder="$("${C[@]}" -n ${NS} get postgrescluster ledger-copy -o jsonpath='{.status.backup.serverName}')"
+[[ "${folder}" == ledger-copy-* ]] || { echo "FAIL: the restored cluster archives to ${folder}, not a folder of its own"; exit 1; }
+wait_for "ledger-copy archives WAL to ${folder}" 30 bash -c \
+  "kubectl --kubeconfig '${PROT_KUBECONFIG}' -n ${NS} get cluster ledger-copy -o jsonpath='{.status.conditions[?(@.type==\"ContinuousArchiving\")].status}' | grep -qx True"
+psql_in "${P[@]}" "select v from e2e" | grep -q after-target \
+  || { echo "FAIL: the source lost data"; exit 1; }
+reject "changing restore on a restored cluster" "restore is immutable" <<YAML
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata: {name: ledger-copy, namespace: ${NS}}
+spec:
+  restore:
+    source:
+      serverName: ledger-db
+      destinationPath: s3://pg-backups/e2e
+      endpointURL: ${S3_ENDPOINT}
+      s3Credentials: {secretName: ledger-db-s3}
+YAML
+"${C[@]}" -n ${NS} delete postgrescluster ledger-copy --wait --timeout=300s
 
 echo "==> switchover: geoReplication.primarySite recovery"
 "${C[@]}" -n ${NS} patch postgrescluster ledger-db --type merge -p '{"spec":{"geoReplication":{"primarySite":"recovery"}}}'

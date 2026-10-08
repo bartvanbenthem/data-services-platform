@@ -1,0 +1,21 @@
+# Project vault with both sites and a ready COSI backup bucket (its status, as
+# the Project composition reports it).
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: vault
+spec:
+  locations:
+    protected: si-ske-demo
+    recovery: onprem-ams
+status:
+  backup:
+    ready: true
+    bucket: vault-backups-0f3a
+    destinationPath: s3://vault-backups-0f3a/barman
+    endpoint: https://s3.example.com
+    region: region-1
+    namespace: vault
+    credentials:
+      si-ske-demo: backup-s3-si-ske-demo
+      onprem-ams: backup-s3-onprem-ams

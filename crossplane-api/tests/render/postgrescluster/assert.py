@@ -49,6 +49,15 @@ EXPECTED = {
     | {f"recovery-{k}" for k in ("cluster", "objectstore", "scheduled-backup", "podmonitor", "prometheusrule",
                                  "secret-secrets-db-backup-s3")},
     "bucketpending": {"dashboard"},
+    # Restored from the Project's bucket: the projectbucket set plus the
+    # read-only restore store in the protected site.
+    "restored": {"cluster", "objectstore", "scheduled-backup", "podmonitor", "prometheusrule",
+                 "secret-secrets-db-r-backup-s3", "dashboard", "restore-objectstore"}
+    | {f"recovery-{k}" for k in ("cluster", "objectstore", "scheduled-backup", "podmonitor", "prometheusrule",
+                                 "secret-secrets-db-r-backup-s3")},
+    # From a store of its own, without backups: no archive, only the restore store and its credentials.
+    "restorecustom": {"cluster", "restore-objectstore", "secret-ledger-db-s3", "podmonitor", "prometheusrule"},
+    "restorepending": {"dashboard"},
 }
 check(set(composed) == EXPECTED[case],
       f"composed resources {sorted(composed)} != expected {sorted(EXPECTED[case])}")
@@ -87,7 +96,7 @@ for key, obj in composed.items():
         refs = [r["patchesFrom"] for r in obj["spec"].get("references", [])]
         check(sorted(r["fieldPath"] for r in refs) == ["data", "type"], f"{key}: Secret must be patched by reference: {refs}")
         # The Project bucket's credentials come from backup-s3-<location> (checked below); the rest from the same name here.
-        if not key.endswith("secret-secrets-db-backup-s3"):
+        if not key.endswith("-backup-s3"):
             check(all(r["kind"] == "Secret" and r["name"] == manifest["metadata"]["name"] and r["namespace"] == ns for r in refs),
                   f"{key}: Secret must be patched from {ns}/{manifest['metadata']['name']}: {refs}")
 
@@ -96,17 +105,19 @@ if case == "noproject":
           f"no sites without a Project: {status}")
     check("not a Project with a protected location" in status.get("message", ""), f"message {status.get('message')}")
     check(conds.get("PostgresReady", {}).get("reason") == "NoSite", "PostgresReady reason NoSite")
-elif case == "bucketpending":
+elif case in ("bucketpending", "restorepending"):
     check(status.get("locations") == [] and "backupStore" not in status, f"nothing placed yet: {status}")
-    check("backup bucket of Project vault, which isn't ready" in status.get("message", ""), f"message {status.get('message')}")
+    verb = "restore reads from" if case == "restorepending" else "backup uses"
+    check(f"{verb} the backup bucket of Project vault, which isn't ready" in status.get("message", ""),
+          f"message {status.get('message')}")
 else:
     # The Projects in payments (required/default.yaml) and vault (projectbucket) have a recovery site.
-    has_recovery = ns == "payments" or case == "projectbucket"
+    has_recovery = ns == "payments" or case in ("projectbucket", "restored")
     want_sites = {"protected": PROTECTED, **({"recovery": RECOVERY} if has_recovery else {})}
     check(status.get("sites") == want_sites, f"status.sites {status.get('sites')} != {want_sites}")
 
 # --- backups in the Project's COSI bucket: one bucket, credentials per site from the Project's Secrets
-if case == "projectbucket":
+if case in ("projectbucket", "restored"):
     store = {"destinationPath": "s3://vault-backups-0f3a/barman", "endpointURL": "https://s3.example.com",
              "namespace": "vault", "region": True}
     check(status.get("backupStore") == store, f"status.backupStore {status.get('backupStore')}")
@@ -115,16 +126,17 @@ if case == "projectbucket":
         check(cfg["destinationPath"] == store["destinationPath"] and cfg["endpointURL"] == store["endpointURL"],
               f"{loc}: ObjectStore not in the project bucket: {cfg}")
         creds = cfg["s3Credentials"]
-        check({creds[k]["name"] for k in ("accessKeyId", "secretAccessKey", "region")} == {"secrets-db-backup-s3"}
+        check({creds[k]["name"] for k in ("accessKeyId", "secretAccessKey", "region")} == {f"{name}-backup-s3"}
               and (creds["accessKeyId"]["key"], creds["secretAccessKey"]["key"], creds["region"]["key"])
               == ("ACCESS_KEY_ID", "ACCESS_SECRET_KEY", "REGION"), f"{loc}: s3Credentials {creds}")
-        secret = composed[f"{prefix}secret-secrets-db-backup-s3"]
+        secret = composed[f"{prefix}secret-{name}-backup-s3"]
         refs = [r["patchesFrom"] for r in secret["spec"]["references"]]
         check(all(r["namespace"] == "vault" and r["name"] == f"backup-s3-{loc}" for r in refs),
               f"{loc}: credentials must come from vault/backup-s3-{loc}: {refs}")
-    check(live("objectstore")["spec"]["retentionPolicy"] == "14d", "the cluster's own backup settings stay")
-    ext = {e["name"] for e in live("recovery-cluster")["spec"]["externalClusters"]}
-    check(ext == {"secrets-db", "secrets-db-onprem-ams"}, f"externalClusters {ext}")
+    if case == "projectbucket":
+        check(live("objectstore")["spec"]["retentionPolicy"] == "14d", "the cluster's own backup settings stay")
+        ext = {e["name"] for e in live("recovery-cluster")["spec"]["externalClusters"]}
+        check(ext == {"secrets-db", "secrets-db-onprem-ams"}, f"externalClusters {ext}")
 else:
     check("backupStore" not in status, "backupStore only for clusters on the Project's bucket")
 
@@ -178,9 +190,10 @@ if GEO:
     else:
         primary = exp[3]
         check(roles == {primary: "primary", ({PROTECTED, RECOVERY} - {primary}).pop(): "replica"}, f"roles {roles}")
-elif case not in ("noproject", "bucketpending", "projectbucket"):
-    check("replica" not in live("cluster")["spec"] and "externalClusters" not in live("cluster")["spec"],
-          "a single-site cluster has no replica topology")
+elif case not in ("noproject", "bucketpending", "projectbucket", "restored", "restorepending"):
+    ext = [e["name"] for e in live("cluster")["spec"].get("externalClusters", [])]
+    check("replica" not in live("cluster")["spec"] and ext == (["restore-source"] if "restore" in xr["spec"] else []),
+          f"a single-site cluster has no replica topology: externalClusters {ext}")
     check(status.get("primaryLocation") == PROTECTED, f"status.primaryLocation {status.get('primaryLocation')}")
     check(status.get("primarySite") == "protected", f"status.primarySite {status.get('primarySite')}")
     check([(l["location"], l["site"]) for l in status.get("locations", [])] == [(PROTECTED, "protected")],
@@ -192,7 +205,7 @@ for key, obj in composed.items():
           f"{key}: missing cnpg.cncp.nl/postgrescluster label")
 
 # --- readiness / status
-if state == "empty" or case in ("noproject", "bucketpending"):
+if state == "empty" or case in ("noproject", "bucketpending", "restorepending"):
     check(status.get("ready") is False, "status.ready should be false before the Cluster exists")
     check(conds.get("PostgresReady", {}).get("status") == "False", "PostgresReady should be False")
     check(conds.get("Ready", {}).get("status") == "False", "XR Ready should be False")
@@ -207,6 +220,69 @@ else:
     if case == "production":
         check(status.get("backup", {}).get("lastSuccessfulBackup") == "2026-10-07T02:00:41Z",
               "backup.lastSuccessfulBackup not mirrored from ObjectStore")
+
+# --- backup folders: the cluster's name, a folder of its own per replica cluster.
+# The Project keeps an inventory of them through the label on the ObjectStore's Object.
+for key in composed:
+    if key.endswith("objectstore") and not key.endswith("restore-objectstore"):
+        manifest = live(key)
+        folder = manifest["metadata"]["annotations"].get("cnpg.cncp.nl/server-name")
+        params = live(key.replace("objectstore", "cluster"))["spec"]["plugins"][0]["parameters"]
+        check(folder == params.get("serverName", name), f"{key}: server-name annotation {folder} != the folder archived to")
+        check(composed[key]["metadata"]["labels"].get("cnpg.cncp.nl/backup-store") == "true",
+              f"{key}: the Project finds backup folders by the cnpg.cncp.nl/backup-store label")
+        check(manifest["metadata"]["annotations"].get("cnpg.cncp.nl/postgres-version") == str(xr["spec"].get("postgresVersion", 17)),
+              f"{key}: postgres-version annotation")
+    elif "objectstore" in key:
+        check("cnpg.cncp.nl/backup-store" not in composed[key]["metadata"]["labels"],
+              f"{key}: a restore source is not one of this cluster's backup folders")
+if "objectstore" in composed and status.get("locations"):
+    primary = next(l["location"] for l in status["locations"] if l["role"] == "primary")
+    key = "objectstore" if primary == PROTECTED else "recovery-objectstore"
+    check(status.get("backup", {}).get("serverName") == live(key)["metadata"]["annotations"]["cnpg.cncp.nl/server-name"],
+          f"status.backup.serverName {status.get('backup')} is the primary's folder")
+
+# --- restore: the protected site bootstraps from the source folder through a
+# read-only store, and archives to a folder of its own.
+if case in ("restored", "restorecustom"):
+    restore = xr["spec"]["restore"]
+    own = f"{name}-{xr['metadata']['uid'][:8]}"
+    spec = live("cluster")["spec"]
+    want = {"source": "restore-source", "database": xr["spec"].get("database", {}).get("name", "app"),
+            "owner": xr["spec"].get("database", {}).get("owner", "app")}
+    if "targetTime" in restore:
+        want["recoveryTarget"] = {"targetTime": restore["targetTime"]}
+    check(spec["bootstrap"] == {"recovery": want}, f"bootstrap {spec['bootstrap']} != {want}")
+    ext = {e["name"]: e["plugin"]["parameters"] for e in spec["externalClusters"]}
+    check(ext.get("restore-source") == {"barmanObjectName": f"{name}-restore", "serverName": restore["source"]["serverName"]},
+          f"restore-source externalCluster {ext.get('restore-source')}")
+    store = live("restore-objectstore")["spec"]
+    check("retentionPolicy" not in store, "the restore store must never prune the source's backups")
+    if case == "restored":
+        check(status.get("backup", {}).get("serverName") == own, f"status.backup.serverName {status.get('backup')} != {own}")
+        check(spec["plugins"][0]["parameters"].get("serverName") == own, "a restored cluster archives to a folder of its own")
+        check(set(ext) == {own, f"{own}-{RECOVERY}", "restore-source"}, f"externalClusters {sorted(ext)}")
+        check(spec["replica"]["self"] == own == spec["replica"]["primary"], f"replica {spec['replica']}")
+        replica = live("recovery-cluster")["spec"]
+        check(replica["bootstrap"] == {"recovery": {"source": own}}, f"the replica cluster starts from {own}: {replica['bootstrap']}")
+        check(replica["plugins"][0]["parameters"]["serverName"] == f"{own}-{RECOVERY}", "replica cluster folder")
+        check("recovery-restore-objectstore" not in composed, "only the protected site restores")
+        check(store["configuration"]["destinationPath"] == "s3://vault-backups-0f3a/barman"
+              and store["configuration"]["s3Credentials"]["accessKeyId"]["name"] == f"{name}-backup-s3",
+              f"restore store not on the Project's bucket: {store}")
+        if state == "empty":
+            check(status.get("message", "").startswith(f"Restoring {name} from backup folder secrets-db (up to 2026-10-08T09:30:00Z)"),
+                  f"message {status.get('message')}")
+    else:
+        check("plugins" not in spec and "replica" not in spec, "no backups, no topology: nothing to archive")
+        check(set(ext) == {"restore-source"}, f"externalClusters {sorted(ext)}")
+        cfg = store["configuration"]
+        check(cfg["destinationPath"] == restore["source"]["destinationPath"] and cfg["endpointURL"] == restore["source"]["endpointURL"]
+              and cfg["s3Credentials"]["secretAccessKey"] == {"name": "ledger-db-s3", "key": "ACCESS_SECRET_KEY"},
+              f"restore store {cfg}")
+        check("backupStore" not in status and "backup" not in status, f"no backups: {status}")
+        if state == "empty":
+            check("from backup folder ledger-db (latest state)" in status.get("message", ""), f"message {status.get('message')}")
 
 check(status.get("endpoints", {}).get("readWrite") == f"{name}-rw.{ns}.svc", "endpoints.readWrite")
 check(status.get("secrets", {}).get("app") == f"{name}-app", "secrets.app")

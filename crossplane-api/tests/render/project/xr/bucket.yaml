@@ -11,3 +11,22 @@ spec:
   locations:
     protected: si-ske-demo
     recovery: onprem-ams
+# The inventory as the last reconcile left it: old-db is gone since (its
+# folder stays, inactive), orders-db's window gets updated.
+status:
+  backup:
+    servers:
+      - serverName: old-db
+        cluster: old-db
+        location: si-ske-demo
+        active: true
+        postgresVersion: 16
+        database: app
+        owner: app
+        firstRecoverabilityPoint: "2026-09-01T02:00:00Z"
+        lastSuccessfulBackup: "2026-09-30T02:00:00Z"
+      - serverName: orders-db
+        cluster: orders-db
+        location: si-ske-demo
+        active: true
+        firstRecoverabilityPoint: "2026-10-01T02:00:00Z"

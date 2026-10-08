@@ -36,6 +36,7 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import { clusterRouteRef, createClusterRouteRef, editProjectRouteRef, projectsRouteRef } from '../routes';
+import { ProjectBackupsPanel } from './Backups';
 import {
   age,
   ErrorAlert,
@@ -422,6 +423,13 @@ export const ProjectDetailPage = () => {
             <Panel title="PostgreSQL clusters">
               <ClusterTable clusters={value.clusters} />
             </Panel>
+            {summary.backupBucket && (
+              <ProjectBackupsPanel
+                project={name}
+                servers={status?.backup?.servers ?? []}
+                clusters={value.clusters.map(c => c.name)}
+              />
+            )}
           </Flex>
         )}
       </Container>

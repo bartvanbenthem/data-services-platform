@@ -31,6 +31,7 @@ export const Router = () => (
     <Route path="/:namespace/:name/monitoring" element={<ClusterDetailPage tab="monitoring" />} />
     <Route path="/:namespace/:name/logs" element={<ClusterDetailPage tab="logs" />} />
     <Route path="/:namespace/:name/dr" element={<ClusterDetailPage tab="dr" />} />
+    <Route path="/:namespace/:name/backups" element={<ClusterDetailPage tab="backups" />} />
     <Route path="/:namespace/:name/edit" element={<EditClusterPage />} />
   </Routes>
 );

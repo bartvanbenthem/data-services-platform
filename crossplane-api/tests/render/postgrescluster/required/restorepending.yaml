@@ -1,0 +1,12 @@
+# Project vault whose COSI bucket is still being provisioned.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: vault
+spec:
+  locations:
+    protected: si-ske-demo
+status:
+  backup:
+    ready: false
+    namespace: vault

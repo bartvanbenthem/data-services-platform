@@ -32,6 +32,18 @@ export interface CreateClusterRequest {
   dryRun?: boolean;
 }
 
+/** A new cluster in a project, restored from a backup folder. */
+export interface RestoreRequest {
+  /** Name of the new cluster. */
+  name: string;
+  /** A cluster's current backup folder, or a folder in the project's inventory (also of deleted clusters). */
+  from: { cluster: string } | { serverName: string };
+  /** RFC 3339; leave out for the latest state. */
+  targetTime?: string;
+  storageSize?: string;
+  dryRun?: boolean;
+}
+
 export interface CreateProjectRequest {
   /** Also the namespace name. */
   name: string;
@@ -96,6 +108,8 @@ export interface CnpgApi {
     request: PromotionRequest & { dryRun?: boolean },
   ): Promise<PostgresCluster>;
   getPodLogs(namespace: string, name: string, request: PodLogsRequest): Promise<PodLogs>;
+  /** Creates a new cluster in `project` from a backup folder; the source is only read. */
+  restoreCluster(project: string, request: RestoreRequest): Promise<PostgresCluster>;
   listProjects(): Promise<ProjectSummary[]>;
   getProject(name: string): Promise<{ summary: ProjectSummary; resource: Project }>;
   createProject(request: CreateProjectRequest): Promise<Project>;
@@ -178,6 +192,13 @@ export class CnpgClient implements CnpgApi {
     if (request.tailLines) query.set('tailLines', String(request.tailLines));
     if (request.previous) query.set('previous', 'true');
     return this.#request<PodLogs>(`/clusters/${enc(namespace)}/${enc(name)}/logs?${query}`);
+  }
+
+  restoreCluster(project: string, request: RestoreRequest) {
+    return this.#request<PostgresCluster>(`/projects/${enc(project)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
   }
 
   async listProjects() {

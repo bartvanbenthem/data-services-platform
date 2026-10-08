@@ -24,6 +24,11 @@
 #                                         (ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION), what
 #                                         PostgresClusters copy to that location
 #
+# With a backup bucket, status.backup.servers is an inventory of the backup
+# folders in it: every PostgresCluster's ObjectStore Object (label
+# cnpg.cncp.nl/backup-store) names its folder; entries stay, inactive, after
+# the cluster is deleted, so it can still be restored from (restore.source).
+#
 # and in each of its locations, spec.locations.protected (where its
 # databases run) and spec.locations.recovery (optional, where
 # PostgresClusters with geoReplication keep a replica cluster):
@@ -763,6 +768,15 @@ spec:
                 matchName: cosi-backups-{{ . }}
               {{- end }}
               {{- end }}
+              {{- if $bucketOn }}
+              # The PostgresClusters' backup stores, for the inventory of the bucket.
+              backup-stores:
+                apiVersion: kubernetes.m.crossplane.io/v1alpha1
+                kind: Object
+                namespace: {{ $ns }}
+                matchLabels:
+                  cnpg.cncp.nl/backup-store: "true"
+              {{- end }}
             {{- $obs := $spec.observability | default (dict) }}
             {{- $promEnabled := dig "prometheus" "enabled" true $obs }}
             {{- $grafEnabled := dig "grafana" "enabled" true $obs }}
@@ -1023,6 +1037,29 @@ spec:
             {{- $bucket = dict "ready" (and $bucketReady (eq (len $credentials) (len $siteLocations)) (ne $endpoint "")) "bucket" $bucketName "endpoint" $endpoint "region" $region "namespace" $ns "credentials" $credentials }}
             {{- end }}
 
+            {{- /* ---- inventory of the bucket's backup folders: the last status's
+                 entries (inactive unless still seen), updated from the
+                 PostgresClusters' ObjectStores that archive to this bucket ---- */}}
+            {{- $servers := dict }}
+            {{- range dig "status" "backup" "servers" (list) $xr }}{{ $_ := set $servers .serverName (merge (dict "active" false) (omit . "active")) }}{{ end }}
+            {{- if $bucket.bucket }}
+            {{- $bucketPath := printf "s3://%s/barman" $bucket.bucket }}
+            {{- range dig "backup-stores" "items" (list) $extra }}
+            {{- $o := .resource }}
+            {{- $os := dig "status" "atProvider" "manifest" (dict) $o }}
+            {{- $ann := dig "metadata" "annotations" (dict) $os }}
+            {{- $srv := get $ann "cnpg.cncp.nl/server-name" }}
+            {{- if and $srv (eq (dig "spec" "configuration" "destinationPath" "" $os) $bucketPath) }}
+            {{- $window := dig "status" "serverRecoveryWindow" $srv (dict) $os }}
+            {{- $e := get $servers $srv | default (dict) }}
+            {{- $e = merge (dict "serverName" $srv "active" true "cluster" (dig "metadata" "labels" "cnpg.cncp.nl/postgrescluster" "" $o) "location" (dig "metadata" "annotations" "platform.cncp.nl/location" "" $o) "postgresVersion" (int (get $ann "cnpg.cncp.nl/postgres-version" | default 0)) "database" (get $ann "cnpg.cncp.nl/database") "owner" (get $ann "cnpg.cncp.nl/database-owner")) $e }}
+            {{- with $window.firstRecoverabilityPoint }}{{ $_ := set $e "firstRecoverabilityPoint" . }}{{ end }}
+            {{- with $window.lastSuccessfulBackupTime }}{{ $_ := set $e "lastSuccessfulBackup" . }}{{ end }}
+            {{- $_ := set $servers $srv $e }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+
             {{- /* ---- a ClusterUsage per registered location: no deleting a Location a Project uses ---- */}}
             {{- range $loc := keys $registered | sortAlpha }}
             ---
@@ -1101,6 +1138,12 @@ spec:
                 {{- with $reach }}
                 reachability:
                   {{- toYaml . | nindent 18 }}
+                {{- end }}
+                {{- if $servers }}
+                servers:
+                  {{- range $k := keys $servers | sortAlpha }}
+                  - {{ toYaml (get $servers $k) | nindent 8 | trim }}
+                  {{- end }}
                 {{- end }}
               {{- end }}
               {{- if $promEnabled }}

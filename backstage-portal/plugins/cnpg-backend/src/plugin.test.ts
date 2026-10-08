@@ -571,6 +571,119 @@ describe('cnpg backend', () => {
     });
   });
 
+  describe('restore', () => {
+    const backedUp: PostgresCluster = {
+      ...ordersDb,
+      spec: {
+        ...ordersDb.spec,
+        storage: { size: '50Gi' },
+        backup: { enabled: true },
+        geoReplication: { enabled: true },
+      },
+      status: {
+        ...ordersDb.status,
+        backup: { serverName: 'orders-db', firstRecoverabilityPoint: '2026-10-01T02:00:00Z' },
+      },
+    };
+    const withInventory: Project = {
+      ...demoProject,
+      status: {
+        ...demoProject.status,
+        backup: {
+          ready: true,
+          servers: [
+            { serverName: 'old-db', cluster: 'old-db', active: false, postgresVersion: 16, database: 'app', owner: 'app',
+              firstRecoverabilityPoint: '2026-09-01T02:00:00Z' },
+          ],
+        },
+      },
+    };
+
+    it("creates a copy of a cluster from its backup folder, keeping the source's settings and owner", async () => {
+      const k8s = fakeK8s();
+      k8s.get.mockResolvedValue(backedUp);
+      const server = await start(k8s);
+      const res = await request(server)
+        .post('/api/cnpg/projects/demo/restore')
+        .send({ name: 'orders-copy', from: { cluster: 'orders-db' }, targetTime: '2026-10-07T12:00:00Z' });
+      expect(res.status).toBe(201);
+      expect(k8s.apply).toHaveBeenCalledWith({
+        namespace: 'demo',
+        name: 'orders-copy',
+        spec: {
+          postgresVersion: 17,
+          instances: 3,
+          pooler: { enabled: true },
+          storage: { size: '50Gi' },
+          backup: { enabled: true },
+          restore: { source: { serverName: 'orders-db' }, targetTime: '2026-10-07T12:00:00Z' },
+        },
+        labels: { 'backstage.io/owner': 'team-orders' },
+        createOnly: true,
+        dryRun: undefined,
+      });
+    });
+
+    it("restores a deleted cluster's folder from the Project's inventory", async () => {
+      const k8s = fakeK8s();
+      k8s.getProject.mockResolvedValue(withInventory);
+      const server = await start(k8s);
+      const res = await request(server)
+        .post('/api/cnpg/projects/demo/restore')
+        .send({ name: 'old-db', from: { serverName: 'old-db' }, storageSize: '20Gi' });
+      expect(res.status).toBe(201);
+      expect(k8s.apply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'old-db',
+          spec: {
+            backup: { enabled: true },
+            postgresVersion: 16,
+            database: { name: 'app', owner: 'app' },
+            storage: { size: '20Gi' },
+            restore: { source: { serverName: 'old-db' } },
+          },
+          labels: undefined,
+        }),
+      );
+      const missing = await request(server)
+        .post('/api/cnpg/projects/demo/restore')
+        .send({ name: 'x', from: { serverName: 'nope' } });
+      expect(missing.status).toBe(404);
+    });
+
+    it('refuses what the backups cannot give', async () => {
+      const k8s = fakeK8s();
+      const server = await start(k8s);
+      // ordersDb has no backups.
+      const noBackups = await request(server)
+        .post('/api/cnpg/projects/demo/restore')
+        .send({ name: 'orders-copy', from: { cluster: 'orders-db' } });
+      expect(noBackups.status).toBe(409);
+      k8s.get.mockResolvedValue(backedUp);
+      const tooEarly = await request(server)
+        .post('/api/cnpg/projects/demo/restore')
+        .send({ name: 'orders-copy', from: { cluster: 'orders-db' }, targetTime: '2026-09-01T00:00:00Z' });
+      expect(tooEarly.status).toBe(400);
+      expect(tooEarly.body.error.message).toMatch(/before the oldest recoverable moment/);
+      expect(k8s.apply).not.toHaveBeenCalled();
+    });
+
+    it('needs the restore permission, also through the plain create', async () => {
+      const k8s = fakeK8s();
+      k8s.get.mockResolvedValue(backedUp);
+      const server = await start(k8s, false);
+      const res = await request(server)
+        .post('/api/cnpg/projects/demo/restore')
+        .send({ name: 'orders-copy', from: { cluster: 'orders-db' } });
+      expect(res.status).toBe(403);
+      const created = await request(server)
+        .post('/api/cnpg/clusters')
+        .send({ name: 'orders-copy', namespace: 'demo', spec: { restore: { source: { serverName: 'orders-db' } } } });
+      expect(created.status).toBe(403);
+      expect(k8s.apply).not.toHaveBeenCalled();
+    });
+  });
+
   it('deletes a cluster', async () => {
     const k8s = fakeK8s();
     const server = await start(k8s);

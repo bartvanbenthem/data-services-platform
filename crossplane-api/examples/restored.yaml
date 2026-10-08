@@ -1,0 +1,21 @@
+# A new cluster restored from orders-db's backups in the Project's bucket, as
+# they were at 09:30 UTC. orders-db keeps running untouched; orders-db-copy
+# gets its own backups, in a folder of its own (status.backup.serverName).
+# The source folder is orders-db's status.backup.serverName, or one of the
+# Project's status.backup.servers (also of clusters deleted since).
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db-copy
+  namespace: demo
+spec:
+  postgresVersion: 17      # must match the source
+  instances: 1
+  storage:
+    size: 20Gi             # at least what the source uses
+  backup:
+    enabled: true
+  restore:
+    source:
+      serverName: orders-db
+    targetTime: "2026-10-08T09:30:00Z"   # leave out for the latest state

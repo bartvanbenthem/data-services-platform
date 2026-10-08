@@ -132,6 +132,26 @@ if case == "bucket":
               and backup.get("credentials") == {loc: f"backup-s3-{loc}" for loc in sites.values()},
               f"status.backup {backup}")
         check("the backup bucket (COSI)" not in status.get("message", ""), f"message {status.get('message')}")
+    # The inventory of backup folders: kept from the last status (old-db's
+    # cluster is gone, its folder stays restorable), updated from the
+    # clusters' ObjectStores in this bucket (ledger-db archives elsewhere).
+    servers = {s["serverName"]: s for s in backup.get("servers", [])}
+    if state == "empty":
+        check(set(servers) == {"old-db", "orders-db"} and not any(s["active"] for s in servers.values()),
+              f"before the bucket is known the last inventory stays, inactive: {servers}")
+    else:
+        check(list(servers) == ["old-db", "orders-db", "orders-db-onprem-ams"], f"servers {list(servers)}")
+        check(servers["old-db"] == {"serverName": "old-db", "cluster": "old-db", "location": "si-ske-demo", "active": False,
+                                    "postgresVersion": 16, "database": "app", "owner": "app",
+                                    "firstRecoverabilityPoint": "2026-09-01T02:00:00Z",
+                                    "lastSuccessfulBackup": "2026-09-30T02:00:00Z"}, f"old-db {servers['old-db']}")
+        check(servers["orders-db"] == {"serverName": "orders-db", "cluster": "orders-db", "location": "si-ske-demo", "active": True,
+                                       "postgresVersion": 17, "database": "orders", "owner": "orders",
+                                       "firstRecoverabilityPoint": "2026-10-02T02:00:00Z",
+                                       "lastSuccessfulBackup": "2026-10-08T02:00:00Z"}, f"orders-db {servers['orders-db']}")
+        check(servers["orders-db-onprem-ams"]["location"] == "onprem-ams" and servers["orders-db-onprem-ams"]["active"]
+              and "firstRecoverabilityPoint" not in servers["orders-db-onprem-ams"], f"{servers['orders-db-onprem-ams']}")
+    if state != "empty":
         for i, loc in enumerate(sites.values()):
             sec = composed[f"backup-s3-{loc}"]
             data = {k: base64.b64decode(v).decode() for k, v in sec.get("data", {}).items()}

@@ -24,6 +24,7 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import {
+  clusterBackupsRouteRef,
   clusterDisasterRecoveryRouteRef,
   clusterLogsRouteRef,
   clusterMonitoringRouteRef,
@@ -31,6 +32,7 @@ import {
   editClusterRouteRef,
   rootRouteRef,
 } from '../routes';
+import { ClusterBackups } from './Backups';
 import { ClusterDetails, ClusterDetailsSkeleton } from './ClusterDetails';
 import { ClusterLogs } from './ClusterLogs';
 import { DisasterRecovery } from './DisasterRecovery';
@@ -111,13 +113,18 @@ const DeleteDialog = ({
   );
 };
 
-export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'logs' | 'dr' }) => {
+export const ClusterDetailPage = ({
+  tab,
+}: {
+  tab: 'overview' | 'monitoring' | 'logs' | 'dr' | 'backups';
+}) => {
   const { namespace = '', name = '' } = useParams();
   const api = useApi(cnpgApiRef);
   const overviewLink = useRouteRef(clusterRouteRef);
   const monitoringLink = useRouteRef(clusterMonitoringRouteRef);
   const logsLink = useRouteRef(clusterLogsRouteRef);
   const drLink = useRouteRef(clusterDisasterRecoveryRouteRef);
+  const backupsLink = useRouteRef(clusterBackupsRouteRef);
   const editLink = useRouteRef(editClusterRouteRef);
   const { allowed: canDelete } = usePermission({ permission: cnpgClusterDeletePermission });
   const { allowed: canUpdate } = usePermission({ permission: cnpgClusterUpdatePermission });
@@ -134,6 +141,7 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'l
           { id: 'overview', label: 'Overview', href: overviewLink(params) },
           { id: 'monitoring', label: 'Monitoring', href: monitoringLink(params) },
           { id: 'logs', label: 'Logs', href: logsLink(params) },
+          ...(backupsLink ? [{ id: 'backups', label: 'Backups', href: backupsLink(params) }] : []),
           ...(showDr && drLink
             ? [{ id: 'dr', label: 'Disaster recovery', href: drLink(params) }]
             : []),
@@ -176,6 +184,7 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'l
           />
         )}
         {value && tab === 'dr' && <DisasterRecovery details={value} onChanged={retry} />}
+        {value && tab === 'backups' && <ClusterBackups details={value} />}
         {value && tab === 'logs' && (
           <ClusterLogs
             namespace={namespace}

@@ -166,4 +166,48 @@ describe('ProjectDetailPage', () => {
     expect(screen.getByText(/it never succeeded/)).toBeInTheDocument();
     expect(screen.getByText(/Connection timed out/)).toBeInTheDocument();
   });
+
+  it("lists the bucket's backup folders and restores a deleted cluster's into a new one", async () => {
+    const api: Partial<CnpgApi> = {
+      getProject: jest.fn(async () => ({
+        summary: project({ backupBucket: { ready: true, bucket: 'demo-backups', reachability: [] } }),
+        resource: {
+          apiVersion: 'v1',
+          kind: 'Project',
+          metadata: { name: 'demo' },
+          spec: {},
+          status: {
+            backup: {
+              servers: [
+                { serverName: 'old-db', cluster: 'old-db', location: 'ske', active: false, postgresVersion: 16,
+                  database: 'app', owner: 'app', firstRecoverabilityPoint: '2026-09-01T02:00:00Z' },
+                { serverName: 'orders-db', cluster: 'orders-db', location: 'ske', active: true, postgresVersion: 17 },
+              ],
+            },
+          },
+        },
+      })),
+      listClusters: jest.fn(async () => [cluster('demo', 'orders-db')]),
+      restoreCluster: jest.fn(async () => ({}) as any),
+    };
+    await render(api);
+    expect(await screen.findByText('Kept (cluster gone)')).toBeInTheDocument();
+    expect(screen.getByText('Archiving')).toBeInTheDocument();
+    expect(screen.getByText('no base backup reported')).toBeInTheDocument();
+    const rows = screen.getAllByRole('row');
+    const oldRow = rows.find(r => within(r).queryByText('Kept (cluster gone)'))!;
+    fireEvent.click(within(oldRow).getByRole('button', { name: 'Restore' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Restore old-db into a new cluster')).toBeInTheDocument();
+    expect(dialog.getByLabelText(/New cluster name/)).toHaveValue('old-db-restore');
+    fireEvent.click(dialog.getByRole('button', { name: 'Restore' }));
+    await waitFor(() =>
+      expect(api.restoreCluster).toHaveBeenCalledWith('demo', {
+        name: 'old-db-restore',
+        from: { serverName: 'old-db' },
+        targetTime: undefined,
+        storageSize: '10Gi',
+      }),
+    );
+  });
 });

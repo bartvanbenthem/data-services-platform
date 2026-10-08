@@ -45,6 +45,12 @@ export const clusterDisasterRecoveryRouteRef = createSubRouteRef({
   path: '/:namespace/:name/dr',
 });
 
+/** /cnpg/:namespace/:name/backups -- backups, and restoring them into a new cluster. */
+export const clusterBackupsRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/:namespace/:name/backups',
+});
+
 /** /cnpg/locations -- the Kubernetes clusters the platform can use. */
 export const locationsRouteRef = createSubRouteRef({
   parent: rootRouteRef,

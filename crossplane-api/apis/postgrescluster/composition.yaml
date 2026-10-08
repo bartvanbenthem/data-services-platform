@@ -41,6 +41,14 @@
 # backup-s3-<location> in the project namespace), copied to the location as
 # <name>-backup-s3. The bucket is pinned
 # in status.backupStore on first use.
+#
+# Restore (spec.restore, only at creation): the protected site's Cluster
+# bootstraps with recovery from another cluster's backup folder, through a
+# read-only ObjectStore <name>-restore (no retentionPolicy: nothing is ever
+# deleted through it). The restored cluster archives to a folder of its own,
+# <name>-<uid[:8]>, so it never writes into the source's folder, not even when
+# it takes the name of a deleted cluster. Its replica cluster's folder is
+# <that>-<recovery location>.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -95,6 +103,9 @@ spec:
             {{- $rulesEnabled := and $monEnabled (dig "prometheusRule" "enabled" true $mon) }}
             {{- $excludeRules := dig "prometheusRule" "excludeRules" (list) $mon }}
             {{- $objectStoreName := printf "%s-backup" $name }}
+            {{- /* spec.restore resolved by the top level (original member only):
+                 dict store (a backup-like destination), serverName, targetTime. */}}
+            {{- $rs := $m.restore | default (dict) }}
 
             {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "cnpg.cncp.nl/postgrescluster" $name }}
 
@@ -202,7 +213,19 @@ spec:
                 {{- end }}
               {{- end }}
               bootstrap:
-                {{- if $m.original }}
+                {{- if $rs }}
+                # Point-in-time recovery from another cluster's backups
+                # (spec.restore); the application owner's password is reset
+                # into the <name>-app Secret.
+                recovery:
+                  source: restore-source
+                  database: {{ dig "name" "app" $db | quote }}
+                  owner: {{ dig "owner" "app" $db | quote }}
+                  {{- with $rs.targetTime }}
+                  recoveryTarget:
+                    targetTime: {{ . | quote }}
+                  {{- end }}
+                {{- else if $m.original }}
                 initdb:
                   database: {{ dig "name" "app" $db | quote }}
                   owner: {{ dig "owner" "app" $db | quote }}
@@ -213,7 +236,7 @@ spec:
                 # A replica cluster starts from the original member's base
                 # backup and WAL archive.
                 recovery:
-                  source: {{ $name }}
+                  source: {{ (first .members).topology }}
                 {{- end }}
               {{- if .distributed }}
               # Distributed topology: self/primary decide whether this member
@@ -225,7 +248,10 @@ spec:
                 {{- with $m.replica.promotionToken }}
                 promotionToken: {{ . | quote }}
                 {{- end }}
+              {{- end }}
+              {{- if or .distributed $rs }}
               externalClusters:
+                {{- if .distributed }}
                 {{- range .members }}
                 - name: {{ .topology }}
                   plugin:
@@ -233,6 +259,15 @@ spec:
                     parameters:
                       barmanObjectName: {{ $objectStoreName }}
                       serverName: {{ .topology }}
+                {{- end }}
+                {{- end }}
+                {{- with $rs }}
+                - name: restore-source
+                  plugin:
+                    name: barman-cloud.cloudnative-pg.io
+                    parameters:
+                      barmanObjectName: {{ $name }}-restore
+                      serverName: {{ .serverName }}
                 {{- end }}
               {{- end }}
               {{- if or $spec.roles $spec.expose }}
@@ -286,8 +321,9 @@ spec:
                   isWALArchiver: true
                   parameters:
                     barmanObjectName: {{ $objectStoreName }}
-                    {{- if not $m.original }}
-                    # Its own folder in the shared object store.
+                    {{- if ne $m.topology $name }}
+                    # Its own folder in the shared object store (a replica
+                    # cluster, or a restored cluster).
                     serverName: {{ $m.topology }}
                     {{- end }}
               {{- end }}
@@ -304,6 +340,12 @@ spec:
               annotations:
                 {{ setResourceNameAnnotation "objectstore" }}
                 gotemplating.fn.crossplane.io/ready: {{ if index $observed "objectstore" }}"True"{{ else }}"False"{{ end }}
+                # What the Project's inventory of its bucket (status.backup.servers)
+                # records about this folder, and keeps after the cluster is gone.
+                cnpg.cncp.nl/server-name: {{ $m.topology | quote }}
+                cnpg.cncp.nl/postgres-version: {{ int ($spec.postgresVersion | default 17) | toString | quote }}
+                cnpg.cncp.nl/database: {{ dig "name" "app" $db | quote }}
+                cnpg.cncp.nl/database-owner: {{ dig "owner" "app" $db | quote }}
               labels:
                 {{- range $k, $v := $labels }}
                 {{ $k }}: {{ $v | quote }}
@@ -362,6 +404,50 @@ spec:
                 name: barman-cloud.cloudnative-pg.io
               cluster:
                 name: {{ $name }}
+            {{- end }}
+
+            {{- /* ================= Restore source: read-only ObjectStore ================= */}}
+            {{- with $rs }}
+            {{- $src := .store }}
+            {{- $creds := $src.s3Credentials }}
+            ---
+            apiVersion: barmancloud.cnpg.io/v1
+            kind: ObjectStore
+            metadata:
+              name: {{ $name }}-restore
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation "restore-objectstore" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "restore-objectstore" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              # No retentionPolicy: the source's backups are only read, never
+              # pruned through this store.
+              configuration:
+                destinationPath: {{ $src.destinationPath | quote }}
+                {{- with $src.endpointURL }}
+                endpointURL: {{ . | quote }}
+                {{- end }}
+                {{- with $src.endpointCA }}
+                endpointCA:
+                  name: {{ .secretName | quote }}
+                  key: {{ .key | default "ca.crt" | quote }}
+                {{- end }}
+                s3Credentials:
+                  accessKeyId:
+                    name: {{ $creds.secretName | quote }}
+                    key: {{ $creds.accessKeyIdKey | default "ACCESS_KEY_ID" | quote }}
+                  secretAccessKey:
+                    name: {{ $creds.secretName | quote }}
+                    key: {{ $creds.secretAccessKeyKey | default "ACCESS_SECRET_KEY" | quote }}
+                  {{- with $creds.regionKey }}
+                  region:
+                    name: {{ $creds.secretName | quote }}
+                    key: {{ . | quote }}
+                  {{- end }}
             {{- end }}
 
             {{- /* ================= Declarative databases ================= */}}
@@ -905,6 +991,10 @@ spec:
             {{- with $backup.s3Credentials }}{{ $copies = append $copies .secretName }}{{ end }}
             {{- with $backup.endpointCA }}{{ $copies = append $copies .secretName }}{{ end }}
             {{- end }}
+            {{- with $rs }}
+            {{- $copies = append $copies .store.s3Credentials.secretName }}
+            {{- with .store.endpointCA }}{{ $copies = append $copies .secretName }}{{ end }}
+            {{- end }}
             {{- range $spec.roles }}{{ with .passwordSecret }}{{ $copies = append $copies . }}{{ end }}{{ end }}
             {{- range $secret := $copies | uniq }}
             ---
@@ -987,8 +1077,11 @@ spec:
             {{- /* ---- backup store: the cluster's own, or the Project's bucket (pinned in status.backupStore) ---- */}}
             {{- $specBackup := $spec.backup | default (dict) }}
             {{- $projectBucket := and (dig "enabled" false $specBackup) (not $specBackup.destinationPath) }}
+            {{- $restore := $spec.restore | default (dict) }}
+            {{- $restoreSrc := dig "source" (dict) $restore }}
+            {{- $restoreFromProject := and $restore (not $restoreSrc.destinationPath) }}
             {{- $store := dict }}
-            {{- if $projectBucket }}
+            {{- if or $projectBucket $restoreFromProject }}
             {{- $store = dig "status" "backupStore" (dict) $xr }}
             {{- $pbs := dig "status" "backup" (dict) $project }}
             {{- if and (not $store.destinationPath) $pbs.ready $pbs.destinationPath }}
@@ -997,17 +1090,22 @@ spec:
             {{- if not $store.destinationPath }}
             {{- /* Never drop WAL archiving from a running cluster. */}}
             {{- if and (hasKey $extra "project") (gt (len $observed) 1) }}{{ fail (printf "PostgresCluster %s/%s uses the Project's backup bucket, but neither status.backupStore nor Project %s status.backup says which" $namespace $name $namespace) }}{{ end }}
-            {{- if not $problem }}{{ $problem = printf "backup uses the backup bucket of Project %s, which isn't ready (Project spec.backup and COSI)" $namespace }}{{ end }}
+            {{- if not $problem }}{{ $problem = printf "%s the backup bucket of Project %s, which isn't ready (Project spec.backup and COSI)" (ternary "backup uses" "restore reads from" $projectBucket) $namespace }}{{ end }}
             {{- end }}
             {{- end }}
+
+            {{- /* ---- archive folders: the cluster's name, or a new one for a restored
+                 cluster (never the folder it restores from) ---- */}}
+            {{- $server := $name }}
+            {{- if $restore }}{{ $server = printf "%s-%s" $name (trunc 8 ($xr.metadata.uid | default "restored")) }}{{ end }}
 
             {{- /* ---- members: the protected site, then the recovery site ---- */}}
             {{- $location := $protected }}
             {{- $members := list }}
-            {{- if and $protected (or (not $projectBucket) $store.destinationPath) }}
-            {{- $members = append $members (dict "location" $protected "site" "protected" "topology" $name "prefix" "" "original" true "instances" $instances) }}
+            {{- if and $protected (or (not (or $projectBucket $restoreFromProject)) $store.destinationPath) }}
+            {{- $members = append $members (dict "location" $protected "site" "protected" "topology" $server "prefix" "" "original" true "instances" $instances) }}
             {{- if and $recovery (or $geoEnabled $draining) }}
-            {{- $members = append $members (dict "location" $recovery "site" "recovery" "topology" (printf "%s-%s" $name $recovery) "prefix" "recovery-" "original" false "instances" (int ($geo.instances | default $instances))) }}
+            {{- $members = append $members (dict "location" $recovery "site" "recovery" "topology" (printf "%s-%s" $server $recovery) "prefix" "recovery-" "original" false "instances" (int ($geo.instances | default $instances))) }}
             {{- end }}
             {{- end }}
             {{- $distributed := gt (len $members) 1 }}
@@ -1025,15 +1123,19 @@ spec:
             {{- $_ := set $byLocation $m.location $m }}
             {{- end }}
 
-            {{- if $store.destinationPath }}
             {{- range $m := $members }}
             {{- $secret := printf "%s-backup-s3" $name }}
+            {{- $b := dict }}
+            {{- if $store.destinationPath }}
             {{- $creds := dict "secretName" $secret }}
             {{- if eq $store.region true }}{{ $_ := set $creds "regionKey" "REGION" }}{{ end }}
-            {{- $b := dict "destinationPath" $store.destinationPath "s3Credentials" $creds }}
+            {{- $b = dict "destinationPath" $store.destinationPath "s3Credentials" $creds }}
             {{- with $store.endpointURL }}{{ $_ := set $b "endpointURL" . }}{{ end }}
-            {{- $_ := set $m "backup" (merge $b $specBackup) }}
+            {{- if $projectBucket }}{{ $_ := set $m "backup" (merge (deepCopy $b) $specBackup) }}{{ end }}
             {{- $_ := set $m "copyFrom" (dict $secret (printf "%s/backup-s3-%s" $store.namespace $m.location)) }}
+            {{- end }}
+            {{- if and $restore $m.original }}
+            {{- $_ := set $m "restore" (dict "store" (ternary $b (omit $restoreSrc "serverName") $restoreFromProject) "serverName" $restoreSrc.serverName "targetTime" ($restore.targetTime | default "")) }}
             {{- end }}
             {{- end }}
 
@@ -1080,7 +1182,7 @@ spec:
             {{- $_ := set $m "role" $role }}
             {{- $_ := set $m "replica" (dict "primary" $primary "source" $source "promotionToken" (ternary $token "" (and (eq $m.location $target) (not $waiting)))) }}
             {{- end }}
-            {{- $primaryM := get $byLocation $current | default (dict "observed" (dict) "cluster" (dict) "instances" $instances "topology" $name) }}
+            {{- $primaryM := get $byLocation $current | default (dict "observed" (dict) "cluster" (dict) "instances" $instances "topology" $server) }}
 
             {{- /* ================= emit every member's objects ================= */}}
             {{- range $m := $members }}
@@ -1094,6 +1196,9 @@ spec:
             {{- $copyFrom := get $ann "platform.cncp.nl/copy-from" }}
             {{- range $a := list "gotemplating.fn.crossplane.io/composition-resource-name" "gotemplating.fn.crossplane.io/ready" "platform.cncp.nl/copy-from" }}{{ $_ := unset $ann $a }}{{ end }}
             {{- if not $ann }}{{ $_ := unset $obj.metadata "annotations" }}{{ end }}
+            {{- /* The Project finds the backup folders in its bucket through this label. */}}
+            {{- $objLabels := $labels }}
+            {{- if eq $obj.kind "ObjectStore" }}{{ if hasKey $ann "cnpg.cncp.nl/server-name" }}{{ $objLabels = merge (dict "cnpg.cncp.nl/backup-store" "true") $labels }}{{ end }}{{ end }}
             ---
             apiVersion: kubernetes.m.crossplane.io/v1alpha1
             kind: Object
@@ -1105,7 +1210,7 @@ spec:
                 gotemplating.fn.crossplane.io/ready: {{ $ready | quote }}
                 platform.cncp.nl/location: {{ $m.location }}
               labels:
-                {{- range $k, $v := $labels }}
+                {{- range $k, $v := $objLabels }}
                 {{ $k }}: {{ $v | quote }}
                 {{- end }}
             spec:
@@ -1190,6 +1295,10 @@ spec:
             {{- if $waiting }}{{ $msg = printf "Switching the primary from %s to %s: waiting for the demotion token of %s" $prev $target $prev }}{{ end }}
             {{- if and $draining (not $waiting) }}{{ $msg = printf "geoReplication is off: switching the primary back to %s before removing the replica cluster in %s" $location $recovery }}{{ end }}
             {{- end }}
+            {{- /* Until an instance is up, a restored cluster is still recovering. */}}
+            {{- if and $restore (not $clusterReady) (eq $ready 0) $members }}
+            {{- $msg = printf "Restoring %s from backup folder %s (%s); phase: %s" $name $restoreSrc.serverName (ternary (printf "up to %s" ($restore.targetTime | default "")) "latest state" (ne ($restore.targetTime | default "") "")) $phase }}
+            {{- end }}
             {{- with $problem }}{{ $msg = . }}{{ end }}
             ---
             apiVersion: cnpg.cncp.nl/v1alpha1
@@ -1247,6 +1356,7 @@ spec:
                 {{- end }}
               {{- if $backupEnabled }}
               backup:
+                serverName: {{ $primaryM.topology | quote }}
                 lastSuccessfulBackup: {{ dig "lastSuccessfulBackupTime" "" $window | quote }}
                 firstRecoverabilityPoint: {{ dig "firstRecoverabilityPoint" "" $window | quote }}
               {{- end }}

@@ -26,6 +26,16 @@ export const cnpgClusterDeletePermission = createPermission({
 });
 
 /**
+ * Create a cluster from another cluster's backups (also needs
+ * cnpg.cluster.create). The new cluster holds a copy of that data, so this
+ * is reading it.
+ */
+export const cnpgClusterRestorePermission = createPermission({
+  name: 'cnpg.cluster.restore',
+  attributes: { action: 'create' },
+});
+
+/**
  * Planned move of a geo-replicated cluster's primary to the other site: the
  * primary is demoted first, so no transaction is lost.
  */
@@ -107,6 +117,7 @@ export const cnpgPermissions = [
   cnpgClusterCreatePermission,
   cnpgClusterUpdatePermission,
   cnpgClusterDeletePermission,
+  cnpgClusterRestorePermission,
   cnpgClusterSwitchoverPermission,
   cnpgClusterFailoverPermission,
   cnpgProjectReadPermission,

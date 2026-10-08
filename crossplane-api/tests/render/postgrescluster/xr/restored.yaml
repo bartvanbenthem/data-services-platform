@@ -1,0 +1,22 @@
+# Restored from the Project's bucket to a point in time: secrets-db's
+# backup folder, into a new geo-replicated cluster that backs up to the same
+# bucket, in folders of its own (secrets-db-r-3f2a9c1e, ...-onprem-ams).
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: secrets-db-r
+  namespace: vault
+  uid: 3f2a9c1e-7b4d-4e0a-9c55-0d1e2f3a4b5c
+spec:
+  instances: 2
+  database:
+    name: vault
+    owner: vault
+  geoReplication:
+    enabled: true
+  backup:
+    enabled: true
+  restore:
+    source:
+      serverName: secrets-db
+    targetTime: "2026-10-08T09:30:00Z"

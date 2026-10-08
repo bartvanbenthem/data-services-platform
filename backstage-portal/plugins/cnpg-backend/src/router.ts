@@ -3,7 +3,7 @@ import {
   PermissionsService,
   RootConfigService,
 } from '@backstage/backend-plugin-api';
-import { ConflictError, InputError, NotAllowedError } from '@backstage/errors';
+import { ConflictError, InputError, NotAllowedError, NotFoundError } from '@backstage/errors';
 import {
   AuthorizeResult,
   BasicPermission,
@@ -16,6 +16,7 @@ import {
   cnpgClusterDeletePermission,
   cnpgClusterFailoverPermission,
   cnpgClusterReadPermission,
+  cnpgClusterRestorePermission,
   cnpgClusterSwitchoverPermission,
   cnpgClusterUpdatePermission,
   cnpgLocationCreatePermission,
@@ -26,6 +27,7 @@ import {
   cnpgProjectDeletePermission,
   cnpgProjectReadPermission,
   cnpgProjectUpdatePermission,
+  clusterRestoreSource,
   LOCAL_LOCATION,
   LOCATION_ENVIRONMENTS,
   LOCATION_PROVIDERS,
@@ -36,8 +38,12 @@ import {
   promotionPatch,
   PostgresClusterSummary,
   projectLocations,
+  RestoreSource,
+  restoreSpec,
+  serverRestoreSource,
   summarize,
   summarizeProject,
+  targetTimeError,
 } from '@internal/backstage-plugin-cnpg-common';
 import { CnpgKubernetesService } from './service/CnpgKubernetesService';
 import { MAX_KUBECONFIG_BYTES } from './service/kubeconfig';
@@ -78,6 +84,23 @@ const patchSchema = z.object({
 const promoteSchema = z.object({
   site: z.enum(['protected', 'recovery']),
   mode: z.enum(['Switchover', 'Failover']),
+  dryRun: z.boolean().optional(),
+});
+
+/**
+ * A new cluster in the project from a backup folder: a cluster's current one
+ * (from.cluster), or one in the Project's inventory of its bucket
+ * (from.serverName), also of clusters deleted since.
+ */
+const restoreSchema = z.object({
+  name,
+  from: z.union([
+    z.object({ cluster: name }),
+    z.object({ serverName: z.string().regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/, 'invalid backup folder').max(128) }),
+  ]),
+  /** RFC 3339; unset restores the latest state. */
+  targetTime: z.string().max(40).optional(),
+  storageSize: z.string().regex(/^[0-9]+(Mi|Gi|Ti)$/, 'e.g. 20Gi').optional(),
   dryRun: z.boolean().optional(),
 });
 
@@ -418,6 +441,8 @@ export async function createRouter(options: {
     await authorize(req, cnpgClusterCreatePermission);
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success) throw new InputError(parsed.error.toString());
+    // A restore copies another cluster's data: the same permission as the restore endpoint.
+    if (parsed.data.spec.restore !== undefined) await authorize(req, cnpgClusterRestorePermission);
     const { owner, ...rest } = parsed.data;
     const created = await k8s.apply({
       ...rest,
@@ -425,6 +450,49 @@ export async function createRouter(options: {
       createOnly: true,
     });
     res.status(parsed.data.dryRun ? 200 : 201).json(created);
+  });
+
+  router.post('/projects/:name/restore', async (req, res) => {
+    await authorize(req, cnpgClusterCreatePermission);
+    await authorize(req, cnpgClusterRestorePermission);
+    const p = z.object({ name: namespace }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    const project = p.data.name;
+    const parsed = restoreSchema.safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { from, targetTime, storageSize, dryRun } = parsed.data;
+    let source: RestoreSource;
+    // The cluster the folder belongs to, while it exists, gives the copy its settings.
+    let base: PostgresCluster | undefined;
+    if ('cluster' in from) {
+      base = await k8s.get(project, from.cluster);
+      const s = clusterRestoreSource(base);
+      if ('error' in s) throw new ConflictError(s.error);
+      source = s;
+    } else {
+      const server = (await k8s.getProject(project)).status?.backup?.servers?.find(
+        s => s.serverName === from.serverName,
+      );
+      if (!server) {
+        throw new NotFoundError(`Backup folder ${from.serverName} not found in project ${project}'s bucket`);
+      }
+      source = serverRestoreSource(server);
+      if (server.active && server.cluster) {
+        base = await k8s.get(project, server.cluster).catch(() => undefined);
+      }
+    }
+    const invalid = targetTimeError(source, targetTime);
+    if (invalid) throw new InputError(invalid);
+    const owner = base?.metadata.labels?.['backstage.io/owner'];
+    const created = await k8s.apply({
+      namespace: project,
+      name: parsed.data.name,
+      spec: restoreSpec(source, { targetTime, storageSize, base: base?.spec }),
+      labels: owner ? { 'backstage.io/owner': owner } : undefined,
+      createOnly: true,
+      dryRun,
+    });
+    res.status(dryRun ? 200 : 201).json(created);
   });
 
   router.put('/clusters/:namespace/:name', async (req, res) => {

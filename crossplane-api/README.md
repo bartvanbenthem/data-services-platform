@@ -40,11 +40,12 @@ the control plane.
 |---|---|---|
 | `postgresql.cnpg.io/v1 Cluster` | always | Image from the `ClusterImageCatalog` by major version; pod anti-affinity, zone spread, quorum sync replication, managed roles, optional WAL volume and external LoadBalancer. `inheritedMetadata` puts `cnpg.cncp.nl/postgrescluster` and `backstage.io/kubernetes-id` on every pod/PVC/Service. |
 | `barmancloud.cnpg.io/v1 ObjectStore` + `ScheduledBackup` | `backup.enabled` | Barman Cloud **plugin**, replacing the deprecated in-tree `barmanObjectStore`. WAL archiving, an immediate first base backup, then on schedule, with retention. |
+| `barmancloud.cnpg.io/v1 ObjectStore` `<name>-restore` (protected site) | `restore` | The backup store the cluster restores from, read-only (no retention policy). See [Restore](#postgrescluster-restore). |
 | `postgresql.cnpg.io/v1 Database` (per entry) | `databases[]` | Declarative extra databases and extensions |
 | `postgresql.cnpg.io/v1 Pooler` (rw, optionally ro) | `pooler.enabled` | PgBouncer with anti-affinity |
 | `monitoring.coreos.com/v1 PodMonitor` (instances, poolers) | `monitoring.enabled` (default) | Exposes the Prometheus metrics: the CNPG exporter on `:9187`, PgBouncer on `:9127`. Replaces the deprecated `Cluster.spec.monitoring.enablePodMonitor`. |
 | `monitoring.coreos.com/v1 PrometheusRule` | `monitoring.prometheusRule.enabled` (default) | The 19 upstream CNPG alerts, scoped to this cluster; `excludeRules` drops some |
-| `v1 Secret` copies | `backup.s3Credentials`, `backup.endpointCA`, `roles[].passwordSecret` | The Secrets the cluster references, copied from the project namespace on the control plane by provider-kubernetes `references`: the values never appear in an `Object` spec |
+| `v1 Secret` copies | `backup.s3Credentials`, `backup.endpointCA`, `restore.source.s3Credentials`/`endpointCA`, `roles[].passwordSecret` | The Secrets the cluster references, copied from the project namespace on the control plane by provider-kubernetes `references`: the values never appear in an `Object` spec |
 | `grafana.integreatly.org/v1beta1 GrafanaDashboard` (control plane) | `monitoring.grafanaDashboard.enabled` (default) | **The same CloudNativePG dashboard** as `cn-paas-operator-poc`, with a per-cluster uid/title and the namespace/cluster variables preselected |
 
 The XR's `status` mirrors CNPG (read back through each `Object`'s `status.atProvider.manifest`): phase, ready/total instances, current primary, image, endpoints
@@ -52,7 +53,7 @@ The XR's `status` mirrors CNPG (read back through each `Object`'s `status.atProv
 uid. A `PostgresReady` condition sits next to Crossplane's own `Ready`/`Synced`.
 
 **Changing a live cluster**: everything except `postgresVersion` (forward only, a major upgrade),
-`database` and the storage classes can change in place. The XRD lets volumes (`storage`, `walStorage`)
+`database`, `restore` and the storage classes can change in place. The XRD lets volumes (`storage`, `walStorage`)
 grow but not shrink, keeps their `storageClass` fixed, and doesn't let `walStorage` be removed. CNPG grows
 PVCs online when the StorageClass has `allowVolumeExpansion`; CPU/memory changes restart the instances one
 by one, the primary last (switchover).
@@ -273,6 +274,14 @@ unreachable bucket doesn't make the Project unready. The failed job's log in the
 why; the portal's project page shows it. The namespace annotation
 `platform.cncp.nl/backup-bucket` tells the admission policy the Project has one.
 
+`status.backup.servers` is the Project's **inventory of the bucket**: one entry per backup folder
+(Barman server name) a PostgresCluster site archives to, with its cluster, location, PostgreSQL
+version, database and recoverable window. The Project finds them through the label
+`cnpg.cncp.nl/backup-store` on the clusters' `ObjectStore` Objects, and keeps entries after their
+cluster is deleted (`active: false`): the retained bucket still has the backups, and this is where
+a [restore](#postgrescluster-restore) finds them. Folders of clusters deleted before the inventory
+existed aren't listed; restore them by `serverName` all the same.
+
 A PostgresCluster with `backup.enabled` and no `destinationPath`/`s3Credentials` uses it: each
 site's `ObjectStore` points at the bucket and endpoint, with Secret `<cluster>-backup-s3` copied
 into that location from `backup-s3-<location>` (provider-kubernetes `references`, so the keys
@@ -343,6 +352,42 @@ add up the series of both sites. Applications connect through each site's own se
 routes between sites. A Project's sites can't be moved: to leave a location, create a Project with
 other sites and restore the databases there from their backups.
 
+### PostgresCluster: restore
+
+Restoring creates a **new** PostgresCluster from a backup folder; it never touches the cluster the
+backups come from (CloudNativePG only restores into a new Cluster anyway):
+
+```yaml
+spec:
+  postgresVersion: 17          # the source's major version
+  database: {name: app, owner: app}   # the source's application database
+  backup: {enabled: true}      # its own backups, in a folder of its own
+  restore:
+    source:
+      serverName: orders-db    # the source's status.backup.serverName, or one of the Project's status.backup.servers
+      # destinationPath + s3Credentials (+ endpointURL, endpointCA): a store of its own;
+      # leave them out for the Project's backup bucket
+    targetTime: "2026-10-08T09:30:00Z"   # leave out for the latest state
+```
+
+| What | How |
+|---|---|
+| Source | `restore.source.serverName` in the Project's bucket, or in `destinationPath` with `s3Credentials`. The protected site's `ObjectStore <name>-restore` reads it, with no retention policy, so nothing is pruned through it. |
+| Bootstrap | `bootstrap.recovery` from that folder up to `targetTime` (or all archived WAL), with `database`/`owner` set, so the owner's password lands in the new `<name>-app` Secret. |
+| Own folder | The restored cluster archives to `<name>-<first 8 characters of its uid>` (`status.backup.serverName`), its replica cluster to `<that>-<recovery location>`. It never writes into the source's folder, even when it takes the name of the deleted cluster it restores. |
+| Only at creation | `restore` can't be added to an existing cluster, changed or removed (XRD rules). |
+| Guardrail | Restoring from the Project's bucket needs a Project that has one (admission policy). |
+
+Until its first instance is up, `status.message` says `Restoring <name> from backup folder <folder>
+(...)`. The target time must be after the folder's first recoverability point (the portal checks
+it), and the source's major version and application database must match: CloudNativePG can't
+restore across major versions. The portal's **Backups** tab ("Restore to a new cluster") copies the
+source cluster's settings (without geo replication or `expose`), and the project page restores any
+folder in the inventory.
+
+After a switchover, the primary archives to the recovery site's folder, which only has base backups
+taken after the switchover: restore from before it out of the protected site's folder.
+
 ## Layout
 
 ```
@@ -361,7 +406,7 @@ hack/generate.py                           embeds src/ into the composition (esc
 hack/observe.py                            generates tests/render observed-state fixtures
 install/                                   Crossplane, function-go-templating, provider-kubernetes, RBAC,
                                            install/uninstall, add-location.sh, migrate-locations.sh
-examples/                                  PostgresClusters (incl. a geo-replicated one), a Project, the
+examples/                                  PostgresClusters (incl. a geo-replicated and a restored one), a Project, the
                                            project-defaults EnvironmentConfig
 tests/render/<api>/                        offline render + schema validation tests per API
 ```
@@ -407,9 +452,10 @@ site, connect to that location instead.
 
 ```sh
 make generate   # after editing composition.tmpl.yaml or src/
-make test       # crossplane render for every API (PostgresCluster: 13 cases incl. geo-replicated,
+make test       # crossplane render for every API (PostgresCluster: 16 cases incl. geo-replicated,
                 # switchover/failover/promoted, draining, pinned sites, no Project, the Project's
-                # backup bucket and one still provisioning; Project: 6 cases incl. both sites, a
+                # backup bucket and one still provisioning, restores from the bucket, from a store
+                # of its own and from a bucket not ready yet; Project: 6 cases incl. both sites, a
                 # COSI bucket and an unregistered location; Location: connected, ready,
                 # unreachable; each empty and observed where it matters; required/ mocks the
                 # Projects, Locations and EnvironmentConfig), crossplane resource validate against
@@ -419,7 +465,7 @@ python3 hack/observe.py project full   # regenerate an observed-state fixture af
 # crossplane render doesn't resolve namespaced extra resources (Crossplane itself does), so the
 # render tests can't show COSI's credentials Secrets being unpacked; they check the rest.
 ../hack/e2e-kind.sh        # the real thing: a control plane and one location on kind
-../hack/e2e-locations.sh   # control plane, protected and recovery location: replication, switchover
+../hack/e2e-locations.sh   # control plane, protected and recovery location: replication, point-in-time restore, switchover
 ```
 
 ## Notes
