@@ -1,12 +1,28 @@
-# Managed PostgreSQL with CloudNativePG
+# PostgreSQL Platform as a Service
 
-A self-service, managed PostgreSQL offering on Kubernetes, built on
-[CloudNativePG](https://cloudnative-pg.io/) (CNPG).
+A complete PostgreSQL Platform as a Service on Kubernetes, built on
+[CloudNativePG](https://cloudnative-pg.io/) (CNPG). Teams order production-ready PostgreSQL
+clusters themselves, through a Kubernetes API or a developer portal. The platform runs and operates
+them:
 
-> **Scope.** For now this project covers one data service only: **managed PostgreSQL with CNPG**.
-> Other engines (caches, message queues, document stores, ...) are out of scope. The layered design
-> (control plane, locations, Projects) leaves room for them later, but nothing here is built or
-> tested for them.
+- **Self-service:** one `PostgresCluster` API object, or a form in the Backstage portal, gives a
+  team a highly available cluster with connection pooling (PgBouncer).
+- **Multi-tenant:** each team works in its own **Project**, with access control, an optional quota
+  and deletion protection.
+- **Built-in observability:** metrics, alerts and the CNPG Grafana dashboard for every cluster, in
+  the Project's own Prometheus and Grafana.
+- **Backups and resilience:** continuous backups to object storage, plus multi-region replicas and
+  disaster recovery (see [below](#multi-region-replicas-and-disaster-recovery)).
+- **Multi-cluster:** databases run in any number of Kubernetes clusters (**locations**), all
+  managed from one control plane.
+
+> **Scope.** For now the platform offers one data service: **PostgreSQL with CNPG**. Other engines
+> (caches, message queues, document stores, ...) are out of scope. The layered design (control
+> plane, locations, Projects) leaves room for them later, but nothing here is built or tested for
+> them.
+
+## Architecture
+
 
 The platform has three layers. A **control plane** cluster runs the APIs (Crossplane) and the portal
 (Backstage), but no databases. The PostgreSQL clusters run in **locations**, which are other
@@ -16,7 +32,7 @@ optionally a **recovery** location. With geo replication, a cluster keeps a CNPG
 the recovery location, ready to take over. The replica is fed through the project's backup bucket,
 which is provisioned with COSI on the control plane and has its own keys for each location.
 
-### Multi-region replicas and disaster recovery
+## Multi-region replicas and disaster recovery
 
 - **Multi-region replicas:** the protected and recovery locations can be clusters in different
   regions or data centers. With geo replication on, every PostgreSQL cluster keeps a CNPG replica
