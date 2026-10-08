@@ -23,3 +23,12 @@ data:
       namespace: prometheus-operator-system
       serviceMonitorLabels:
         release: prometheus-operator
+  # A COSI backup bucket per Project (Cloudian HyperStore, installed by
+  # ../cosi/deploy-cosi-crds-driver.sh): PostgresClusters with backups and no
+  # destination of their own archive there. Each Project gets its own
+  # BucketClass (deletionPolicy Retain) and keys per location; the IAM access
+  # class still hands out S3 keys in COSI's BucketInfo Secret.
+  backup:
+    cosi:
+      driverName: cloudian-cosi-driver
+      bucketAccessClassName: cosi-test-bucketaccessclass

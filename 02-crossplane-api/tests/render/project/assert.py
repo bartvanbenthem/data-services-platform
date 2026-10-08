@@ -2,6 +2,7 @@
 
 usage: assert.py <case> <empty|observed> <render-output.yaml>
 """
+import base64
 import sys
 
 import yaml
@@ -53,7 +54,9 @@ EXPECTED = {
     # location once the project namespace exists.
     "bucket": {"empty": {"namespace", "usage-location-si-ske-demo", "usage-location-onprem-ams", "backup-bucketclass"},
                "observed": HUB | {"usage-location-si-ske-demo", "usage-location-onprem-ams", "backup-bucketclass",
-                                  "backup-bucket", "backup-access-si-ske-demo", "backup-access-onprem-ams"}
+                                  "backup-bucket", "backup-access-si-ske-demo", "backup-access-onprem-ams",
+                                  "backup-sa-si-ske-demo", "backup-sa-onprem-ams",
+                                  "backup-s3-si-ske-demo", "backup-s3-onprem-ams"}
                | at("si-ske-demo", REMOTE) | at("onprem-ams", REMOTE)},
     # No Location "nowhere": no ClusterUsage for it, and the Project isn't ready.
     "unregistered": {"empty": {"namespace"}},
@@ -105,17 +108,33 @@ if case == "bucket":
             acc = composed[f"backup-access-{loc}"]
             check(acc["kind"] == "BucketAccess" and acc["metadata"]["name"] == f"backups-{loc}"
                   and acc["spec"] == {"bucketClaimName": "backups", "bucketAccessClassName": "backups-keys",
-                                      "credentialsSecretName": f"cosi-backups-{loc}", "protocol": "S3"},
+                                      "credentialsSecretName": f"cosi-backups-{loc}",
+                                      "serviceAccountName": f"backups-{loc}", "protocol": "S3"},
                   f"{loc}: BucketAccess {acc['spec']}")
+            sa = composed[f"backup-sa-{loc}"]
+            check(sa["kind"] == "ServiceAccount" and sa["metadata"]["name"] == f"backups-{loc}"
+                  and sa["metadata"]["namespace"] == name and sa.get("automountServiceAccountToken") is False,
+                  f"{loc}: the IAM access class needs a ServiceAccount: {sa}")
     backup = status.get("backup", {})
     check(backup.get("namespace", name) == name, f"status.backup {backup}")
-    # `crossplane render` doesn't resolve namespaced extra resources (real Crossplane does), so
-    # COSI's Secrets never arrive here: no unpacked credentials, and the project keeps waiting.
-    check(backup.get("ready") is False and not backup.get("credentials"), f"status.backup {backup}")
-    check("the backup bucket (COSI)" in status.get("message", ""), f"message {status.get('message')}")
-    if state == "observed":
-        check(backup.get("bucket") == f"{name}-backups-0f3a"
-              and backup.get("destinationPath") == f"s3://{name}-backups-0f3a/barman", f"status.backup {backup}")
+    if state == "empty":
+        check(backup.get("ready") is False and not backup.get("credentials"), f"status.backup {backup}")
+        check("the backup bucket (COSI)" in status.get("message", ""), f"message {status.get('message')}")
+    else:
+        # COSI's Secrets are namespaced: they come back in .requiredResources only.
+        check(backup.get("ready") is True and backup.get("bucket") == f"{name}-backups-0f3a"
+              and backup.get("destinationPath") == f"s3://{name}-backups-0f3a/barman"
+              and backup.get("endpoint") == "https://s3.example.com" and backup.get("region") == "region-1"
+              and backup.get("credentials") == {loc: f"backup-s3-{loc}" for loc in sites.values()},
+              f"status.backup {backup}")
+        check("the backup bucket (COSI)" not in status.get("message", ""), f"message {status.get('message')}")
+        for i, loc in enumerate(sites.values()):
+            sec = composed[f"backup-s3-{loc}"]
+            data = {k: base64.b64decode(v).decode() for k, v in sec.get("data", {}).items()}
+            check(sec["kind"] == "Secret" and sec["metadata"]["namespace"] == name
+                  and data == {"ACCESS_KEY_ID": f"FAKEKEYID{i}", "ACCESS_SECRET_KEY": f"fake-secret-{i}",
+                               "REGION": "region-1"},
+                  f"{loc}: keys unpacked from COSI's BucketInfo: {sorted(data)}")
 else:
     check("backup" not in status, "no backup status without COSI classes")
 

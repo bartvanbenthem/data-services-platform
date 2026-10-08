@@ -17,7 +17,9 @@
 #                                         with spec.backup.bucketClassName)
 #   BucketClaim backups                   the project's backup bucket (spec.backup)
 #   BucketAccess backups-<location>       one per location: its own S3 keys, which COSI
-#                                         writes to Secret cosi-backups-<location>
+#                                         writes to Secret cosi-backups-<location>; with a
+#                                         ServiceAccount backups-<location> (IAM access classes
+#                                         need one)
 #   Secret backup-s3-<location>           those keys unpacked from COSI's BucketInfo JSON
 #                                         (ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION), what
 #                                         PostgresClusters copy to that location
@@ -579,7 +581,9 @@ spec:
             {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "platform.cncp.nl/project" $name }}
 
             {{- /* ---- cluster-wide settings: EnvironmentConfig project-defaults ---- */}}
-            {{- $extra := .extraResources | default (dict) }}
+            {{- /* function-go-templating hands namespaced requirements (COSI's Secrets)
+                 back in .requiredResources only, and cluster-scoped ones in both. */}}
+            {{- $extra := merge (dict) (.extraResources | default (dict)) (.requiredResources | default (dict)) }}
             {{- $env := dict }}
             {{- with (index $extra "defaults") }}
             {{- with .items }}{{ $env = dig "resource" "data" (dict) (first .) }}{{ end }}
@@ -656,7 +660,7 @@ spec:
             {{- $registered := dict }}
             {{- $unschedulable := list }}
             {{- range $m := rest $members }}
-            {{- with dig (printf "location-%s" $m.location) "items" (list) ($.extraResources | default (dict)) }}
+            {{- with dig (printf "location-%s" $m.location) "items" (list) $extra }}
             {{- $loc := (first .).resource }}
             {{- $_ := set $registered $m.location $loc }}
             {{- if eq (dig "spec" "schedulable" true $loc) false }}{{ $unschedulable = append $unschedulable $m.location }}{{ end }}
@@ -778,6 +782,23 @@ spec:
               protocols: [S3]
             {{- range $loc := $siteLocations }}
             {{- $access := dig (printf "backup-access-%s" $loc) "resource" (dict) $observed }}
+            {{- /* The COSI sidecar refuses an IAM-type access class without a
+                 ServiceAccount; nothing runs as it (the locations use the keys). */}}
+            ---
+            apiVersion: v1
+            kind: ServiceAccount
+            metadata:
+              name: backups-{{ $loc }}
+              namespace: {{ $ns }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: backup-sa-{{ $loc }}
+                gotemplating.fn.crossplane.io/ready: "True"
+                platform.cncp.nl/location: {{ $loc }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            automountServiceAccountToken: false
             ---
             apiVersion: objectstorage.k8s.io/v1alpha1
             kind: BucketAccess
@@ -796,6 +817,7 @@ spec:
               bucketClaimName: backups
               bucketAccessClassName: {{ $accessClass | quote }}
               credentialsSecretName: cosi-backups-{{ $loc }}
+              serviceAccountName: backups-{{ $loc }}
               protocol: S3
             {{- /* COSI's Secret holds one BucketInfo JSON document; CNPG needs the keys
                  as Secret keys of their own. */}}

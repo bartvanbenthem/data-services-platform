@@ -66,7 +66,7 @@ const KpnNav = () => {
     <nav className="kpn-nav" aria-label="sidebar nav">
       <Link to={CNPG} className="kpn-nav__brand" aria-label="Home">
         <KpnLogo height={26} />
-        <span className="kpn-nav__product">Data Services</span>
+        <span className="kpn-nav__product">Managed PostgreSQL</span>
       </Link>
       <div className="kpn-nav__sections">
         {sections.map(section => (
