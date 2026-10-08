@@ -71,7 +71,8 @@ run here; switch them off per project if you don't want them), then:
 ```sh
 crossplane-api/install/install.sh                        # Crossplane 2.4 + function + provider + RBAC + APIs + policies
 crossplane-api/install/add-location.sh dc-a dc-a.kubeconfig   # each location (or add it in the portal)
-kubectl apply -f deps/demo/                              # project-defaults EnvironmentConfig + Project demo (edit its location)
+kubectl apply -f deps/control-plane/project-defaults.yaml   # platform-wide Project settings (edit the ingress domain)
+kubectl apply -f deps/demo/project.yaml                  # Project demo (edit its location)
 kubectl apply -f crossplane-api/examples/minimal.yaml    # a PostgresCluster in demo, running in dc-a
 ```
 

@@ -1,4 +1,5 @@
-# Cluster-wide Project settings for this cluster (see
+# Platform-wide Project settings for this control plane: every Project's
+# composition reads them, so apply this once, before the first Project (see
 # ../../crossplane-api/examples/project-defaults.yaml for every key).
 apiVersion: apiextensions.crossplane.io/v1beta1
 kind: EnvironmentConfig
@@ -8,14 +9,15 @@ data:
   grafana:
     ingress:
       className: haproxy
-      # nip.io resolves to the IP in the name: the HAProxy LoadBalancer IP
-      # (kubectl get svc -n haproxy-ingress). Change it for another cluster.
-      hostTemplate: grafana-{project}.188.34.124.213.nip.io
+      # *.paas.cncp.nl points at the HAProxy LoadBalancer IP
+      # (kubectl get svc -n haproxy-ingress); a new IP only needs that DNS
+      # record changed. The wildcard covers one label: <x>-{project}.
+      hostTemplate: grafana-{project}.paas.cncp.nl
   prometheus:
     # The locations' Prometheus send their samples here, through this
-    # cluster's ingress (the same HAProxy IP).
+    # cluster's ingress (the same wildcard DNS name).
     remoteWrite:
-      hostTemplate: prometheus-{project}.188.34.124.213.nip.io
+      hostTemplate: prometheus-{project}.paas.cncp.nl
       scheme: http
       className: haproxy
     # These describe the locations (where kube-prometheus-stack runs there).

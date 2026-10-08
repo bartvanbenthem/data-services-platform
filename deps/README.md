@@ -2,7 +2,8 @@
 
 Everything the platform needs before
 [`operator/`](../operator/) and
-[`crossplane-api/`](../crossplane-api/) are installed, plus the
+[`crossplane-api/`](../crossplane-api/) are installed, the platform-wide
+Project settings (`control-plane/project-defaults.yaml`), plus the
 `demo` Project (a namespace with its own Prometheus and Grafana). The
 platform has a **control plane** (Crossplane, the APIs, the portal, each
 Project's Grafana; no databases) and **locations**, the clusters the
@@ -74,7 +75,7 @@ kubectl get crd grafanas.grafana.integreatly.org
 ## 4. HAProxy Ingress (optional)
 
 On the control plane: the projects' Grafana and the remote-write endpoint
-(`prometheus.remoteWrite` in `demo/project-defaults.yaml`) the locations'
+(`prometheus.remoteWrite` in `control-plane/project-defaults.yaml`) the locations'
 Prometheus send their metrics through. Without it Grafana shows no
 database metrics. Any `networking.k8s.io/v1` ingress controller works.
 
@@ -94,7 +95,33 @@ MetalLB isn't needed.
 kubectl get svc -n haproxy-ingress   # EXTERNAL-IP is where ingress hosts must resolve to
 ```
 
-## 5. The `demo` Project (after crossplane-api)
+## 5. Platform settings: `project-defaults` (after crossplane-api)
+
+[`control-plane/project-defaults.yaml`](control-plane/project-defaults.yaml)
+is the `EnvironmentConfig` every Project's composition reads: one per control
+plane, for all Projects, so it goes in before the first one (its CRD comes
+with Crossplane, so after `crossplane-api/install/install.sh`). It holds this
+environment's values:
+
+- the Grafana ingress host (`grafana-<project>.paas.cncp.nl`) and the
+  remote-write endpoint the locations' Prometheus send to
+  (`prometheus-<project>.paas.cncp.nl`), both through the HAProxy Ingress of
+  step 4. A wildcard DNS record `*.paas.cncp.nl` points at its LoadBalancer
+  IP; use your own domain (or `<x>-{project}.<ip>.nip.io` without DNS)
+  elsewhere
+- where kube-prometheus-stack's ServiceMonitors live in the locations (step 2)
+- the COSI driver and access class for each Project's backup bucket
+  ([`cosi/`](cosi/README.md)); leave `backup` out without COSI, and clusters
+  bring a backup store of their own
+
+[`crossplane-api/examples/project-defaults.yaml`](../crossplane-api/examples/project-defaults.yaml)
+documents every key. Projects pick up a change on their next reconcile.
+
+```sh
+kubectl apply -f control-plane/project-defaults.yaml
+```
+
+## 6. The `demo` Project (after crossplane-api)
 
 A namespace with its own Prometheus and Grafana is a **Project**
 (`platform.cncp.nl/v1alpha1`, see
@@ -105,23 +132,17 @@ and after registering the location the demo databases run in
 run against that location first). `demo/project.yaml` names it
 `si-ske-demo`: change that to your location's name.
 
-- [`demo/project-defaults.yaml`](demo/project-defaults.yaml): the
-  cluster-wide `EnvironmentConfig` every Project reads. It sets the Grafana
-  ingress host (`grafana-<project>.<haproxy-ip>.nip.io`) and where
-  kube-prometheus-stack's ServiceMonitors live (step 2). Edit the IP for a
-  different cluster.
-- [`demo/project.yaml`](demo/project.yaml): the `demo` Project. Crossplane
-  creates the namespace on the control plane and in the location, a
-  Prometheus in the location that scrapes every `PodMonitor` and
-  `PrometheusRule` in it (plus the kubelet / kube-state-metrics /
-  node-exporter targets from step 2) and writes to the project's Prometheus
-  on the control plane, and there a Grafana with a `prometheus` datasource,
-  anonymous Viewer access and embedding allowed. The Grafana carries
-  `dashboards.paas.cncp.nl/scope=demo`, which every PostgresCluster's
-  `GrafanaDashboard` in `demo` selects.
+It needs the platform settings of step 5.
+[`demo/project.yaml`](demo/project.yaml) is the `demo` Project. Crossplane
+creates the namespace on the control plane and in the location, a Prometheus
+in the location that scrapes every `PodMonitor` and `PrometheusRule` in it
+(plus the kubelet / kube-state-metrics / node-exporter targets from step 2)
+and writes to the project's Prometheus on the control plane, and there a
+Grafana with a `prometheus` datasource, anonymous Viewer access and
+embedding allowed. The Grafana carries `dashboards.paas.cncp.nl/scope=demo`,
+which every PostgresCluster's `GrafanaDashboard` in `demo` selects.
 
 ```sh
-kubectl apply -f demo/project-defaults.yaml
 kubectl apply -f demo/project.yaml
 kubectl wait project/demo --for=condition=Ready --timeout=10m
 ```
