@@ -13,6 +13,7 @@ import type {
   PostgresClusterDetails,
   PostgresClusterSummary,
   Project,
+  PromotionRequest,
   ProjectSummary,
 } from '@internal/backstage-plugin-cnpg-common';
 
@@ -88,6 +89,12 @@ export interface CnpgApi {
     request: PatchRequest & { owner?: string | null },
   ): Promise<PostgresCluster>;
   deleteCluster(namespace: string, name: string): Promise<void>;
+  /** Moves the primary to the other site; 409 when that can't happen now. */
+  promoteCluster(
+    namespace: string,
+    name: string,
+    request: PromotionRequest & { dryRun?: boolean },
+  ): Promise<PostgresCluster>;
   getPodLogs(namespace: string, name: string, request: PodLogsRequest): Promise<PodLogs>;
   listProjects(): Promise<ProjectSummary[]>;
   getProject(name: string): Promise<{ summary: ProjectSummary; resource: Project }>;
@@ -156,6 +163,13 @@ export class CnpgClient implements CnpgApi {
 
   async deleteCluster(namespace: string, name: string) {
     await this.#request(`/clusters/${enc(namespace)}/${enc(name)}`, { method: 'DELETE' });
+  }
+
+  promoteCluster(namespace: string, name: string, request: PromotionRequest & { dryRun?: boolean }) {
+    return this.#request<PostgresCluster>(`/clusters/${enc(namespace)}/${enc(name)}/promote`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
   }
 
   getPodLogs(namespace: string, name: string, request: PodLogsRequest) {

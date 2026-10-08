@@ -24,6 +24,7 @@ import useAsyncRetry from 'react-use/esm/useAsyncRetry';
 import useInterval from 'react-use/esm/useInterval';
 import { cnpgApiRef } from '../api';
 import {
+  clusterDisasterRecoveryRouteRef,
   clusterLogsRouteRef,
   clusterMonitoringRouteRef,
   clusterRouteRef,
@@ -32,6 +33,7 @@ import {
 } from '../routes';
 import { ClusterDetails, ClusterDetailsSkeleton } from './ClusterDetails';
 import { ClusterLogs } from './ClusterLogs';
+import { DisasterRecovery } from './DisasterRecovery';
 import { ErrorAlert, HealthBadge } from './common';
 import { GrafanaDashboard } from './GrafanaDashboard';
 
@@ -109,18 +111,21 @@ const DeleteDialog = ({
   );
 };
 
-export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'logs' }) => {
+export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'logs' | 'dr' }) => {
   const { namespace = '', name = '' } = useParams();
   const api = useApi(cnpgApiRef);
   const overviewLink = useRouteRef(clusterRouteRef);
   const monitoringLink = useRouteRef(clusterMonitoringRouteRef);
   const logsLink = useRouteRef(clusterLogsRouteRef);
+  const drLink = useRouteRef(clusterDisasterRecoveryRouteRef);
   const editLink = useRouteRef(editClusterRouteRef);
   const { allowed: canDelete } = usePermission({ permission: cnpgClusterDeletePermission });
   const { allowed: canUpdate } = usePermission({ permission: cnpgClusterUpdatePermission });
   const [deleting, setDeleting] = useState(false);
   const { value: config } = useAsync(() => api.getConfig(), [api]);
-  const { value, error } = useClusterDetails(namespace, name);
+  const { value, error, retry } = useClusterDetails(namespace, name);
+  // Only clusters that have (or still have) a replica cluster in a recovery site.
+  const showDr = Boolean(value?.summary.geoReplication || value?.summary.recoveryLocation) || tab === 'dr';
 
   const params = { namespace, name };
   const tabs =
@@ -129,6 +134,9 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'l
           { id: 'overview', label: 'Overview', href: overviewLink(params) },
           { id: 'monitoring', label: 'Monitoring', href: monitoringLink(params) },
           { id: 'logs', label: 'Logs', href: logsLink(params) },
+          ...(showDr && drLink
+            ? [{ id: 'dr', label: 'Disaster recovery', href: drLink(params) }]
+            : []),
         ]
       : undefined;
 
@@ -167,6 +175,7 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'l
             uid={value.summary.dashboardUid}
           />
         )}
+        {value && tab === 'dr' && <DisasterRecovery details={value} onChanged={retry} />}
         {value && tab === 'logs' && (
           <ClusterLogs
             namespace={namespace}

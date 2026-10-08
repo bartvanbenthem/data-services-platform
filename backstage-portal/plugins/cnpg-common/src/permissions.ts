@@ -25,6 +25,25 @@ export const cnpgClusterDeletePermission = createPermission({
   attributes: { action: 'delete' },
 });
 
+/**
+ * Planned move of a geo-replicated cluster's primary to the other site: the
+ * primary is demoted first, so no transaction is lost.
+ */
+export const cnpgClusterSwitchoverPermission = createPermission({
+  name: 'cnpg.cluster.switchover',
+  attributes: { action: 'update' },
+});
+
+/**
+ * Promote the other site right away, for when the primary's site is down.
+ * Transactions not archived yet are lost: reserve it for on-call or platform
+ * admins.
+ */
+export const cnpgClusterFailoverPermission = createPermission({
+  name: 'cnpg.cluster.failover',
+  attributes: { action: 'update' },
+});
+
 /** List Projects (also what the create-cluster form needs to offer namespaces). */
 export const cnpgProjectReadPermission = createPermission({
   name: 'cnpg.project.read',
@@ -88,6 +107,8 @@ export const cnpgPermissions = [
   cnpgClusterCreatePermission,
   cnpgClusterUpdatePermission,
   cnpgClusterDeletePermission,
+  cnpgClusterSwitchoverPermission,
+  cnpgClusterFailoverPermission,
   cnpgProjectReadPermission,
   cnpgProjectCreatePermission,
   cnpgProjectUpdatePermission,

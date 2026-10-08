@@ -14,7 +14,9 @@ import { z } from 'zod/v3';
 import {
   cnpgClusterCreatePermission,
   cnpgClusterDeletePermission,
+  cnpgClusterFailoverPermission,
   cnpgClusterReadPermission,
+  cnpgClusterSwitchoverPermission,
   cnpgClusterUpdatePermission,
   cnpgLocationCreatePermission,
   cnpgLocationDeletePermission,
@@ -28,7 +30,10 @@ import {
   LOCATION_ENVIRONMENTS,
   LOCATION_PROVIDERS,
   LocationSummary,
+  movesPrimary,
   Project,
+  PostgresCluster,
+  promotionPatch,
   PostgresClusterSummary,
   projectLocations,
   summarize,
@@ -68,6 +73,22 @@ const patchSchema = z.object({
   owner: labelValue.nullable().optional(),
   dryRun: z.boolean().optional(),
 });
+
+/** Move the primary of a geo-replicated cluster to the other site. */
+const promoteSchema = z.object({
+  site: z.enum(['protected', 'recovery']),
+  mode: z.enum(['Switchover', 'Failover']),
+  dryRun: z.boolean().optional(),
+});
+
+/** Moving the primary has its own endpoint and permissions; edits may not do it. */
+function assertKeepsPrimary(existing: PostgresCluster, spec: Record<string, unknown>) {
+  if (movesPrimary(existing, spec.geoReplication as Record<string, unknown> | undefined)) {
+    throw new InputError(
+      'geoReplication.primarySite/promotion change the primary site: use POST /clusters/:namespace/:name/promote',
+    );
+  }
+}
 
 const ownerLabel = (owner: string | null | undefined) =>
   owner === undefined ? undefined : { 'backstage.io/owner': owner || null };
@@ -412,6 +433,10 @@ export async function createRouter(options: {
     const parsed = updateSchema.safeParse(req.body);
     if (!parsed.success) throw new InputError(parsed.error.toString());
     const existing = await k8s.get(p.namespace, p.name);
+    // A full spec: a missing geoReplication keeps (or the XRD defaults) the primary site.
+    assertKeepsPrimary(existing, {
+      geoReplication: { primarySite: undefined, promotion: undefined, ...(parsed.data.spec.geoReplication as object) },
+    });
     const owner = existing.metadata.labels?.['backstage.io/owner'];
     res.json(
       await k8s.apply({
@@ -428,7 +453,23 @@ export async function createRouter(options: {
     const parsed = patchSchema.safeParse(req.body);
     if (!parsed.success) throw new InputError(parsed.error.toString());
     const { spec, owner, dryRun } = parsed.data;
+    assertKeepsPrimary(await k8s.get(p.namespace, p.name), spec);
     res.json(await k8s.patch({ ...p, spec, labels: ownerLabel(owner), dryRun }));
+  });
+
+  // Disaster recovery: switch over (lossless) or fail over to the other site.
+  router.post('/clusters/:namespace/:name/promote', async (req, res) => {
+    const p = params(req);
+    const parsed = promoteSchema.safeParse(req.body);
+    if (!parsed.success) throw new InputError(parsed.error.toString());
+    const { dryRun, ...request } = parsed.data;
+    await authorize(
+      req,
+      request.mode === 'Failover' ? cnpgClusterFailoverPermission : cnpgClusterSwitchoverPermission,
+    );
+    const plan = promotionPatch(await k8s.get(p.namespace, p.name), request);
+    if ('error' in plan) throw new ConflictError(plan.error);
+    res.json(await k8s.patch({ ...p, spec: plan.spec, dryRun }));
   });
 
   router.delete('/clusters/:namespace/:name', async (req, res) => {

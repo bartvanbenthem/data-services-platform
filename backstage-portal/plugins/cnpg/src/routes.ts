@@ -39,6 +39,12 @@ export const clusterLogsRouteRef = createSubRouteRef({
   path: '/:namespace/:name/logs',
 });
 
+/** /cnpg/:namespace/:name/dr -- switch the primary between the sites. */
+export const clusterDisasterRecoveryRouteRef = createSubRouteRef({
+  parent: rootRouteRef,
+  path: '/:namespace/:name/dr',
+});
+
 /** /cnpg/locations -- the Kubernetes clusters the platform can use. */
 export const locationsRouteRef = createSubRouteRef({
   parent: rootRouteRef,

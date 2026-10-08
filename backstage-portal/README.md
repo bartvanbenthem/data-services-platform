@@ -11,7 +11,8 @@ project, PostgreSQL, New cluster and Dashboards.
 |---|---|
 | **PostgreSQL** page (the landing page): summary tiles, then all clusters across namespaces with health, version, instances, primary, location (and its replica cluster), pooler/backup flags; filter + search; auto-refresh | `plugins/cnpg` (`/cnpg`) |
 | Cluster detail: status, connection endpoints & credential Secret, storage/HA/pooler/backup/monitoring config, both sites with their location and role (primary, replica, promoting), instance pods and recent events from both, conditions, **Edit**, delete (type-to-confirm) | `/cnpg/:namespace/:name` |
-| **Edit cluster**: everything that changes in place: volume sizes (grow only), instances, CPU/memory, HA, pooler, backups, monitoring, owner, **geo replication** and the **primary site** (switchover or failover). Name, project, protected location, PostgreSQL version, database and StorageClass are read-only. The panel shows the exact change (a merge patch); **Validate** dry-runs it | `/cnpg/:namespace/:name/edit` |
+| **Edit cluster**: everything that changes in place: volume sizes (grow only), instances, CPU/memory, HA, pooler, backups, monitoring, owner and **geo replication**. Name, project, protected location, primary site, PostgreSQL version, database and StorageClass are read-only. The panel shows the exact change (a merge patch); **Validate** dry-runs it | `/cnpg/:namespace/:name/edit` |
+| **Disaster recovery** tab (geo-replicated clusters): both sites with their location, role (primary, replica cluster, promoting), health and instances; the WAL archive the replica cluster replays; **Switch over** (planned, demotes the primary first, loses nothing) and **Fail over** (promotes the other site right away; type-to-confirm, warns when the primary's site still looks healthy) to the other site, and back. A switchover that waits for a site that is down can be escalated to a failover. Backend: `POST /clusters/:namespace/:name/promote` with `{site, mode}`; edits can't move the primary | `/cnpg/:namespace/:name/dr` |
 | **Locations** page: the Kubernetes clusters the platform can use, with environment, provider/region, API server, Kubernetes version, Ready nodes, health (probed from the backend, cached 30s), whether Crossplane can use it and how many projects do | `/cnpg/locations` |
 | Location detail: settings, connection (server, context, auth type, TLS), what Crossplane reports (connected, operators installed) and projects, every health check, **Check now**, **Edit**, remove (type-to-confirm, refused while a project lists it) | `/cnpg/locations/:name` |
 | **Add location** / **Edit location**: upload or paste a kubeconfig (pick a context if it has several), name, environment, provider, region, owner, default StorageClass, open/closed for new databases; **Test connection** probes it before saving | `/cnpg/locations/create`, `/cnpg/locations/:name/edit` |
@@ -25,7 +26,7 @@ project, PostgreSQL, New cluster and Dashboards.
 | Create-cluster form with live manifest preview and **Validate** (server-side dry run against the XRD). The cluster's namespace is picked from the Projects, not typed; it runs in that project's protected location, and **Geo replication** (offered when the project has a recovery location) adds a replica cluster there. Backups go to the project's COSI bucket by default when it has one, or to a destination of your own | `/cnpg/create` |
 | Every Project in the catalog as a `Resource` of type `project` (named after the project, owner from `spec.owner`), and every PostgresCluster as a `Resource` of type `postgres-cluster` (owner/system from the `backstage.io/owner` / `backstage.io/system` labels, `dependsOn` its project, a **PostgreSQL** tab) | `plugins/cnpg-backend` catalog module |
 | Software Templates *Project* (action `cnpg:project:create`) and *PostgreSQL cluster (CloudNativePG)* (action `cnpg:postgrescluster:create`, project picked with an `EntityPicker` on `spec.type: project`) | `templates/` |
-| Permissions `cnpg.cluster.{read,create,update,delete}`, `cnpg.project.{read,create,update,delete}` and `cnpg.location.{read,create,update,delete}`; the UI hides create/edit/delete when denied | `plugins/cnpg-common` |
+| Permissions `cnpg.cluster.{read,create,update,delete,switchover,failover}`, `cnpg.project.{read,create,update,delete}` and `cnpg.location.{read,create,update,delete}`; the UI hides create/edit/delete when denied | `plugins/cnpg-common` |
 
 ```
 plugins/cnpg            frontend plugin (pages, entity tab, API client)
@@ -101,8 +102,9 @@ is reserved).
 A Project has a **protected** location, where its databases run, and optionally a **recovery**
 location (**New project** > Locations; **Edit project** can add a recovery location later, but
 neither changes once set). The create-cluster form shows the protected location and offers **Geo
-replication** when the project has a recovery location; **Edit cluster** switches the **primary
-site** over (switchover or failover) or turns geo replication off. The cluster detail page and the
+replication** when the project has a recovery location; **Edit cluster** turns geo replication off,
+and the cluster's **Disaster recovery** tab switches the **primary site** over (switchover, or
+failover when the primary's site is down). The cluster detail page and the
 Logs tab read pods, events and logs from both sites with that location's kubeconfig (a location
 that doesn't answer shows as a warning, the rest of the page still loads). The `location` of a log
 request must be one the cluster runs in; without one, the primary's.

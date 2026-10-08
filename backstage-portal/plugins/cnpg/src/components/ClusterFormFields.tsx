@@ -56,7 +56,6 @@ export const ClusterFormFields = ({
   const bucket = backupBucketProp ?? project?.backupBucket;
   // Moving a running cluster's WAL archive would cut off its replica cluster.
   const storeFixed = editing && original!.backupEnabled;
-  const switching = editing && form.primarySite !== original!.primarySite;
   // Geo replication off while the primary is in the recovery site: the
   // composition switches it back first, then removes the replica cluster.
   const draining = editing && original!.geoReplication && !form.geoReplication;
@@ -206,39 +205,12 @@ export const ClusterFormFields = ({
             isInvalid={Boolean(err('geoInstances'))}
           />
         )}
-        {editing && (form.geoReplication || original!.geoReplication) && (
-          <Select
+        {editing && original!.geoReplication && (
+          <TextField
             label="Primary site"
-            value={form.primarySite}
-            onChange={k => set('primarySite')(k as ClusterForm['primarySite'])}
-            options={(['protected', 'recovery'] as const).map(site => ({
-              id: site,
-              label: siteLabel(site, sites),
-              disabled: site === 'recovery' && !form.geoReplication,
-            }))}
-            description={
-              err('primarySite') ??
-              (switching
-                ? `Saving moves the primary from the ${original!.primarySite} site to the ${form.primarySite} site.`
-                : 'Pick the other site to switch the primary over to it.')
-            }
-            isInvalid={Boolean(err('primarySite'))}
-          />
-        )}
-        {switching && (
-          <Select
-            label="How"
-            value={form.promotion}
-            onChange={k => set('promotion')(k as ClusterForm['promotion'])}
-            options={[
-              { id: 'Switchover', label: 'Switchover: demote the primary first, lose nothing' },
-              { id: 'Failover', label: 'Failover: promote now, the primary is unreachable' },
-            ]}
-            description={
-              form.promotion === 'Failover'
-                ? "Transactions the old primary hadn't archived yet are lost."
-                : 'Waits until the old primary has handed over; takes a minute or two.'
-            }
+            isDisabled
+            value={siteLabel(original!.primarySite, sites)}
+            description="Switch over or fail over from the cluster's Disaster recovery tab."
           />
         )}
       </Section>

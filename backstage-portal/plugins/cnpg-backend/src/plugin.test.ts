@@ -506,6 +506,71 @@ describe('cnpg backend', () => {
     expect(bad.status).toBe(400);
   });
 
+  describe('disaster recovery', () => {
+    const geoDb: PostgresCluster = {
+      ...ordersDb,
+      spec: { ...ordersDb.spec, geoReplication: { enabled: true, primarySite: 'protected', promotion: 'Switchover' } },
+      status: { ...ordersDb.status, primarySite: 'protected' },
+    };
+
+    it('switches over by patching only primarySite and promotion', async () => {
+      const k8s = fakeK8s();
+      k8s.get.mockResolvedValue(geoDb);
+      const server = await start(k8s);
+      const res = await request(server)
+        .post('/api/cnpg/clusters/demo/orders-db/promote')
+        .send({ site: 'recovery', mode: 'Switchover' });
+      expect(res.status).toBe(200);
+      expect(k8s.patch).toHaveBeenCalledWith({
+        namespace: 'demo',
+        name: 'orders-db',
+        spec: { geoReplication: { primarySite: 'recovery', promotion: 'Switchover' } },
+        dryRun: undefined,
+      });
+    });
+
+    it('refuses moves that make no sense now with 409', async () => {
+      const k8s = fakeK8s();
+      const server = await start(k8s);
+      // ordersDb has no replica cluster.
+      const res = await request(server)
+        .post('/api/cnpg/clusters/demo/orders-db/promote')
+        .send({ site: 'recovery', mode: 'Failover' });
+      expect(res.status).toBe(409);
+      const bad = await request(server)
+        .post('/api/cnpg/clusters/demo/orders-db/promote')
+        .send({ site: 'elsewhere', mode: 'Switchover' });
+      expect(bad.status).toBe(400);
+      expect(k8s.patch).not.toHaveBeenCalled();
+    });
+
+    it('keeps edits from moving the primary', async () => {
+      const k8s = fakeK8s();
+      k8s.get.mockResolvedValue(geoDb);
+      const server = await start(k8s);
+      const moved = await request(server)
+        .patch('/api/cnpg/clusters/demo/orders-db')
+        .send({ spec: { geoReplication: { primarySite: 'recovery' } } });
+      expect(moved.status).toBe(400);
+      const drained = await request(server)
+        .patch('/api/cnpg/clusters/demo/orders-db')
+        .send({ spec: { geoReplication: { enabled: false, primarySite: 'protected' } } });
+      expect(drained.status).toBe(200);
+      expect(k8s.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it('needs the switchover or failover permission', async () => {
+      const k8s = fakeK8s();
+      k8s.get.mockResolvedValue(geoDb);
+      const server = await start(k8s, false);
+      const res = await request(server)
+        .post('/api/cnpg/clusters/demo/orders-db/promote')
+        .send({ site: 'recovery', mode: 'Failover' });
+      expect(res.status).toBe(403);
+      expect(k8s.patch).not.toHaveBeenCalled();
+    });
+  });
+
   it('deletes a cluster', async () => {
     const k8s = fakeK8s();
     const server = await start(k8s);

@@ -10,6 +10,7 @@ import { CNPG_ANNOTATION } from '@internal/backstage-plugin-cnpg-common';
 import { cnpgApiRef, CnpgClient } from './api';
 import { PostgresIcon } from './components/common';
 import {
+  clusterDisasterRecoveryRouteRef,
   clusterLogsRouteRef,
   clusterMonitoringRouteRef,
   clusterRouteRef,
@@ -72,6 +73,7 @@ export const cnpgPlugin = createFrontendPlugin({
     dashboards: dashboardsRouteRef,
     clusterMonitoring: clusterMonitoringRouteRef,
     clusterLogs: clusterLogsRouteRef,
+    clusterDisasterRecovery: clusterDisasterRecoveryRouteRef,
     projects: projectsRouteRef,
     project: projectRouteRef,
     createProject: createProjectRouteRef,
