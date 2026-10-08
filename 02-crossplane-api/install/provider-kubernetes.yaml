@@ -1,0 +1,36 @@
+# provider-kubernetes: how Crossplane reaches the other locations. Every
+# Location gets a ClusterProviderConfig named after it, pointing at its
+# kubeconfig Secret (composed by apis/location), and the
+# compositions wrap what runs there in its namespaced Objects
+# (kubernetes.m.crossplane.io). Check
+# https://github.com/crossplane-contrib/provider-kubernetes/releases before
+# bumping, and update tests/crds/kubernetes.m.crossplane.io_*.yaml to match.
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-kubernetes
+spec:
+  package: xpkg.crossplane.io/crossplane-contrib/provider-kubernetes:v1.3.1
+  runtimeConfigRef:
+    name: provider-kubernetes
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: provider-kubernetes
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          containers:
+            - name: package-runtime
+              args:
+                # Objects set spec.watch: CNPG status changes in a location
+                # reach the PostgresCluster status right away instead of on the
+                # next poll (10 minutes).
+                - --enable-watches
+                # S3 credentials and role passwords are copied to locations as
+                # Secrets: keep their values out of Object.status.atProvider.
+                - --sanitize-secrets

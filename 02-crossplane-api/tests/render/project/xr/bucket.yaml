@@ -1,0 +1,13 @@
+# Both sites and a COSI backup bucket (driver from project-defaults): the
+# project's own BucketClass (Retain), and in its namespace one BucketClaim, a
+# BucketAccess per location and their keys unpacked into Secrets
+# PostgresClusters copy to the locations.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: team-orders
+spec:
+  owner: team-orders
+  locations:
+    protected: si-ske-demo
+    recovery: onprem-ams

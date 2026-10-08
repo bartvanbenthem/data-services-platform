@@ -11,8 +11,9 @@ import {
 } from './projectForm';
 
 describe('create-project form', () => {
-  it('maps the defaults onto observability settings only', () => {
-    expect(toProjectSpec({ ...defaultProjectForm(), name: 'team-a' })).toEqual({
+  it('maps the defaults onto the protected location and observability settings only', () => {
+    expect(toProjectSpec({ ...defaultProjectForm(), name: 'team-a', protectedLocation: 'ske' })).toEqual({
+      locations: { protected: 'ske' },
       observability: {
         prometheus: { retention: '7d', storage: { size: '10Gi' } },
         grafana: { ingress: true },
@@ -60,6 +61,7 @@ describe('create-project form', () => {
     const errors = validateProject({
       ...defaultProjectForm(),
       name: 'team-a',
+      protectedLocation: 'ske',
       quotaEnabled: true,
       quotaMemory: '32GB',
       prometheusRetention: '7 days',
@@ -75,6 +77,7 @@ const live: Project = {
   spec: {
     owner: 'team-a',
     deletionProtection: true,
+    locations: { protected: 'ske' },
     access: [{ group: 'team-a-devs', role: 'edit' }],
     quota: { cpu: '8', memory: '32Gi', storage: '200Gi' },
     observability: {
@@ -120,5 +123,24 @@ describe('edit-project form', () => {
     expect(validateProjectEdit(original, { ...original, prometheusStorage: '5Gi' }).prometheusStorage).toMatch(
       /not shrink/,
     );
+  });
+
+  it('needs a protected location and a different recovery location', () => {
+    const f = { ...defaultProjectForm(), name: 'x' };
+    expect(validateProject(f).protectedLocation).toBeDefined();
+    expect(validateProject({ ...f, protectedLocation: 'ske' })).toEqual({});
+    expect(validateProject({ ...f, protectedLocation: 'ske', recoveryLocation: 'ske' }).recoveryLocation).toBeDefined();
+    expect(toProjectSpec({ ...f, protectedLocation: 'ske' })).toMatchObject({ locations: { protected: 'ske' } });
+    expect(toProjectSpec({ ...f, protectedLocation: 'ske', recoveryLocation: 'ams' })).toMatchObject({
+      locations: { protected: 'ske', recovery: 'ams' },
+    });
+  });
+
+  it('adds a recovery location later, but changes neither once set', () => {
+    const withRecovery = { ...original, recoveryLocation: 'ams' };
+    expect(toProjectEditPatch(original, withRecovery)).toEqual({ locations: { recovery: 'ams' } });
+    expect(validateProjectEdit(original, withRecovery)).toEqual({});
+    expect(validateProjectEdit(withRecovery, { ...withRecovery, recoveryLocation: '' }).recoveryLocation).toMatch(/Fixed/);
+    expect(validateProjectEdit(original, { ...original, protectedLocation: 'other' }).protectedLocation).toMatch(/Fixed/);
   });
 });

@@ -4,23 +4,25 @@ import {
   createServiceRef,
   LoggerService,
 } from '@backstage/backend-plugin-api';
-import { ConflictError, NotFoundError } from '@backstage/errors';
+import { ConflictError, InputError, NotFoundError } from '@backstage/errors';
 import {
   ApiException,
   ApisApi,
   CoreV1Api,
+  CustomObjectsApi,
   Health,
   KubeConfig,
   V1Secret,
   VersionApi,
 } from '@kubernetes/client-node';
 import {
+  LOCAL_LOCATION,
   LOCATION_LABEL,
-  LOCATION_SPEC_ANNOTATION,
   LocationCheck,
   LocationConnection,
   LocationHealth,
   LocationSpec,
+  LocationStatus,
   LocationSummary,
 } from '@internal/backstage-plugin-cnpg-common';
 import { apiMessage, cnpgKubernetesServiceRef, kubeCall } from './CnpgKubernetesService';
@@ -28,6 +30,27 @@ import { parseKubeconfig } from './kubeconfig';
 
 const KUBECONFIG_KEY = 'kubeconfig';
 const OWNER_LABEL = 'backstage.io/owner';
+/** The Location API (02-crossplane-api/apis/location), cluster-scoped. */
+const LOCATION_API = { group: 'platform.cncp.nl', version: 'v1alpha1', plural: 'locations' };
+const API_MISSING =
+  'The Location API (locations.platform.cncp.nl) is not installed; run 02-crossplane-api/install/install.sh';
+
+interface LocationResource {
+  apiVersion?: string;
+  kind?: string;
+  metadata: {
+    name: string;
+    labels?: Record<string, string>;
+    creationTimestamp?: string | Date;
+    resourceVersion?: string;
+  };
+  spec: LocationSpec & {
+    credentials: { secretRef: { namespace: string; name: string; key?: string } };
+    /** Crossplane's own fields (compositionRef, resourceRefs, ...). */
+    crossplane?: unknown;
+  };
+  status?: LocationStatus & { providerConfig?: string };
+}
 /** Per call; an unreachable location answers the list page within a few seconds. */
 const PROBE_TIMEOUT_MS = 5_000;
 /** How long a health result is reused before the next request probes again. */
@@ -138,36 +161,57 @@ export async function probe(kubeconfig: string): Promise<LocationHealth> {
 }
 
 /**
- * Locations (Kubernetes clusters the platform can use) stored as Secrets in
- * one namespace of the platform cluster; see LOCATION_LABEL in the common
- * package for the layout. Health is probed from this backend and cached
- * briefly, so list pages don't hammer every API server.
+ * Locations (Kubernetes clusters the platform can use): a Location object
+ * (02-crossplane-api/apis/location) holding the settings, and the kubeconfig
+ * as a Secret in one namespace of the platform cluster, which the Location
+ * references. Crossplane composes the rest (the ClusterProviderConfig, the
+ * Prometheus ClusterRole in the location) and reports in the Location's
+ * status whether it got through. Health is probed from this backend and
+ * cached briefly, so list pages don't hammer every API server.
  */
 export class LocationService {
   readonly #core: CoreV1Api;
+  readonly #custom: CustomObjectsApi;
   readonly #namespace: string;
   readonly #logger: LoggerService;
   readonly #health = new Map<string, { at: number; result: Promise<LocationHealth> }>();
 
   constructor(options: { kubeConfig: KubeConfig; namespace: string; logger: LoggerService }) {
     this.#core = options.kubeConfig.makeApiClient(CoreV1Api);
+    this.#custom = options.kubeConfig.makeApiClient(CustomObjectsApi);
     this.#namespace = options.namespace;
     this.#logger = options.logger;
   }
 
   async list(): Promise<LocationSummary[]> {
-    const res = await kubeCall(() =>
-      this.#core.listNamespacedSecret({
-        namespace: this.#namespace,
-        labelSelector: `${LOCATION_LABEL}=true`,
-      }),
+    let res;
+    try {
+      res = await kubeCall(() => this.#custom.listClusterCustomObject(LOCATION_API));
+    } catch (e) {
+      if (!(e instanceof NotFoundError)) throw e;
+      this.#logger.warn(`${API_MISSING}; no locations to list`);
+      return [];
+    }
+    const locations = (res.items ?? []) as LocationResource[];
+    const secrets = await this.#secrets();
+    const items = await Promise.all(
+      locations.map(async l => this.#summarize(l, await this.#kubeconfigOf(l, secrets), false)),
     );
-    const items = await Promise.all(res.items.map(s => this.#withHealth(s)));
     return items.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async get(name: string, options: { refresh?: boolean } = {}): Promise<LocationSummary> {
-    return this.#withHealth(await this.#secret(name), options.refresh);
+    const location = await this.#location(name);
+    return this.#summarize(location, await this.#kubeconfigOf(location), options.refresh ?? false);
+  }
+
+  /** Credentials for a location's API server, for reading what runs there (pods, events, logs). */
+  async kubeConfig(name: string): Promise<KubeConfig> {
+    const kubeconfig = await this.#kubeconfigOf(await this.#location(name));
+    if (kubeconfig instanceof Error) throw kubeconfig;
+    const kc = new KubeConfig();
+    kc.loadFromString(kubeconfig);
+    return kc;
   }
 
   /** Validates and probes a location without storing it ("Test connection"). */
@@ -182,8 +226,11 @@ export class LocationService {
     spec: LocationSpec;
   }): Promise<LocationSummary> {
     const { name, spec } = options;
+    if (name === LOCAL_LOCATION) {
+      throw new InputError(`"${LOCAL_LOCATION}" is reserved; pick another name`);
+    }
     const { kubeconfig } = parseKubeconfig(options.kubeconfig, options.context);
-    const exists = await this.#secret(name).then(
+    const exists = await this.#location(name).then(
       () => true,
       e => {
         if (e instanceof NotFoundError) return false;
@@ -192,29 +239,30 @@ export class LocationService {
     );
     if (exists) throw new ConflictError(`Location ${name} already exists`);
 
-    const body: V1Secret = {
-      metadata: { name, namespace: this.#namespace, ...this.#meta(spec) },
-      type: 'Opaque',
-      stringData: { [KUBECONFIG_KEY]: kubeconfig },
+    // Secret first, so the ClusterProviderConfig never points at nothing.
+    const secretRef = { namespace: this.#namespace, name, key: KUBECONFIG_KEY };
+    await this.#writeSecret(name, kubeconfig);
+    const body: LocationResource = {
+      apiVersion: `${LOCATION_API.group}/${LOCATION_API.version}`,
+      kind: 'Location',
+      metadata: { name, labels: this.#labels(spec) },
+      spec: { ...clean(spec), credentials: { secretRef } },
     };
-    let created: V1Secret;
+    let created: LocationResource;
     try {
-      created = await kubeCall(() =>
-        this.#core.createNamespacedSecret({ namespace: this.#namespace, body }),
-      );
+      created = (await kubeCall(() =>
+        this.#custom.createClusterCustomObject({ ...LOCATION_API, body }),
+      )) as LocationResource;
     } catch (e) {
-      if (!(e instanceof NotFoundError)) throw e;
-      // First location: the namespace isn't there yet (in-cluster, deploy/ creates it).
       await kubeCall(() =>
-        this.#core.createNamespace({ body: { metadata: { name: this.#namespace } } }),
-      );
-      created = await kubeCall(() =>
-        this.#core.createNamespacedSecret({ namespace: this.#namespace, body }),
-      );
+        this.#core.deleteNamespacedSecret({ namespace: this.#namespace, name }),
+      ).catch(() => undefined);
+      if (e instanceof NotFoundError) throw new Error(API_MISSING);
+      throw e;
     }
     this.#logger.info(`Added location ${name}`);
     this.#health.delete(name);
-    return this.#withHealth(created);
+    return this.#summarize(created, kubeconfig, false);
   }
 
   /** Replaces the settings and, when given, the kubeconfig. */
@@ -222,82 +270,172 @@ export class LocationService {
     name: string,
     options: { spec: LocationSpec; kubeconfig?: string; context?: string },
   ): Promise<LocationSummary> {
-    const secret = await this.#secret(name);
-    const meta = this.#meta(options.spec);
-    const labels = { ...secret.metadata?.labels, ...meta.labels };
+    const location = await this.#location(name);
+    let kubeconfig: string | Error | undefined;
+    if (options.kubeconfig) {
+      kubeconfig = parseKubeconfig(options.kubeconfig, options.context).kubeconfig;
+      const ref = location.spec.credentials.secretRef;
+      if (ref.namespace !== this.#namespace) {
+        throw new InputError(
+          `Location ${name} reads its kubeconfig from ${ref.namespace}/${ref.name}, which the portal doesn't manage; update that Secret instead`,
+        );
+      }
+      await this.#writeSecret(ref.name, kubeconfig, ref.key);
+    }
+    const labels = { ...location.metadata.labels, ...this.#labels(options.spec) };
     if (!options.spec.owner) delete labels[OWNER_LABEL];
-    const body: V1Secret = {
-      ...secret,
-      metadata: {
-        ...secret.metadata,
-        labels,
-        annotations: { ...secret.metadata?.annotations, ...meta.annotations },
+    const body: LocationResource = {
+      ...location,
+      metadata: { ...location.metadata, labels },
+      // Credentials and Crossplane's own fields (composition, resource refs) stay.
+      spec: {
+        ...clean(options.spec),
+        credentials: location.spec.credentials,
+        ...(location.spec.crossplane ? { crossplane: location.spec.crossplane } : {}),
       },
     };
-    if (options.kubeconfig) {
-      const { kubeconfig } = parseKubeconfig(options.kubeconfig, options.context);
-      body.data = { ...body.data, [KUBECONFIG_KEY]: Buffer.from(kubeconfig).toString('base64') };
-    }
-    const updated = await kubeCall(() =>
-      this.#core.replaceNamespacedSecret({ namespace: this.#namespace, name, body }),
-    );
+    const updated = (await kubeCall(() =>
+      this.#custom.replaceClusterCustomObject({ ...LOCATION_API, name, body }),
+    )) as LocationResource;
     this.#logger.info(
       `Updated location ${name}${options.kubeconfig ? ' (new kubeconfig)' : ''}`,
     );
     this.#health.delete(name);
-    return this.#withHealth(updated);
+    return this.#summarize(updated, kubeconfig ?? (await this.#kubeconfigOf(updated)), false);
   }
 
+  /**
+   * Deletes the Location, then its Secret (when the portal manages it). The
+   * API server refuses the first while a Project lists the location (the
+   * Project composition's ClusterUsage); callers check first for a clearer
+   * message.
+   */
   async delete(name: string): Promise<void> {
-    await this.#secret(name);
+    const location = await this.#location(name);
     await kubeCall(
-      () => this.#core.deleteNamespacedSecret({ namespace: this.#namespace, name }),
+      () => this.#custom.deleteClusterCustomObject({ ...LOCATION_API, name }),
       `Location ${name}`,
     );
+    const ref = location.spec.credentials.secretRef;
+    if (ref.namespace === this.#namespace) {
+      try {
+        const secret = await kubeCall(() =>
+          this.#core.readNamespacedSecret({ namespace: ref.namespace, name: ref.name }),
+        );
+        if (secret.metadata?.labels?.[LOCATION_LABEL] === 'true') {
+          await kubeCall(() =>
+            this.#core.deleteNamespacedSecret({ namespace: ref.namespace, name: ref.name }),
+          );
+        }
+      } catch (e) {
+        if (!(e instanceof NotFoundError)) throw e;
+      }
+    }
     this.#health.delete(name);
     this.#logger.info(`Removed location ${name}`);
   }
 
-  #meta(spec: LocationSpec) {
-    return {
-      labels: {
-        [LOCATION_LABEL]: 'true',
-        'app.kubernetes.io/managed-by': 'backstage',
-        ...(spec.owner ? { [OWNER_LABEL]: spec.owner } : {}),
+  /** Creates or replaces a kubeconfig Secret in the locations namespace. */
+  async #writeSecret(name: string, kubeconfig: string, key = KUBECONFIG_KEY): Promise<void> {
+    const body: V1Secret = {
+      metadata: {
+        name,
+        namespace: this.#namespace,
+        labels: { [LOCATION_LABEL]: 'true', 'app.kubernetes.io/managed-by': 'backstage' },
       },
-      annotations: { [LOCATION_SPEC_ANNOTATION]: JSON.stringify(spec) },
+      type: 'Opaque',
+      stringData: { [key]: kubeconfig },
+    };
+    const create = () =>
+      kubeCall(() => this.#core.createNamespacedSecret({ namespace: this.#namespace, body }));
+    try {
+      await create();
+    } catch (e) {
+      if (e instanceof ConflictError) {
+        // Left over from an earlier location of that name, or a new kubeconfig.
+        await kubeCall(() =>
+          this.#core.replaceNamespacedSecret({ namespace: this.#namespace, name, body }),
+        );
+        return;
+      }
+      if (!(e instanceof NotFoundError)) throw e;
+      // First location: the namespace isn't there yet (in-cluster, deploy/ creates it).
+      await kubeCall(() =>
+        this.#core.createNamespace({ body: { metadata: { name: this.#namespace } } }),
+      );
+      await create();
+    }
+  }
+
+  /** The labelled Secrets of the locations namespace, by name. */
+  async #secrets(): Promise<Map<string, V1Secret>> {
+    const res = await kubeCall(() =>
+      this.#core.listNamespacedSecret({
+        namespace: this.#namespace,
+        labelSelector: `${LOCATION_LABEL}=true`,
+      }),
+    );
+    return new Map(res.items.map(s => [s.metadata?.name ?? '', s]));
+  }
+
+  /**
+   * The kubeconfig a Location references, or why it can't be read (missing
+   * Secret, or one outside what this backend may read).
+   */
+  async #kubeconfigOf(
+    location: LocationResource,
+    secrets?: Map<string, V1Secret>,
+  ): Promise<string | Error> {
+    const ref = location.spec?.credentials?.secretRef;
+    if (!ref) return new Error('the Location has no spec.credentials.secretRef');
+    let secret = ref.namespace === this.#namespace ? secrets?.get(ref.name) : undefined;
+    if (!secret) {
+      try {
+        secret = await kubeCall(
+          () => this.#core.readNamespacedSecret({ namespace: ref.namespace, name: ref.name }),
+          `Secret ${ref.namespace}/${ref.name}`,
+        );
+      } catch (e) {
+        return e as Error;
+      }
+    }
+    const data = secret.data?.[ref.key ?? KUBECONFIG_KEY];
+    if (!data) return new Error(`Secret ${ref.namespace}/${ref.name} has no key ${ref.key ?? KUBECONFIG_KEY}`);
+    return Buffer.from(data, 'base64').toString();
+  }
+
+  async #location(name: string): Promise<LocationResource> {
+    if (name === LOCAL_LOCATION) throw new NotFoundError(`Location ${name} not found`);
+    return (await kubeCall(
+      () => this.#custom.getClusterCustomObject({ ...LOCATION_API, name }),
+      `Location ${name}`,
+    )) as LocationResource;
+  }
+
+  #labels(spec: LocationSpec): Record<string, string> {
+    return {
+      'app.kubernetes.io/managed-by': 'backstage',
+      ...(spec.owner ? { [OWNER_LABEL]: spec.owner } : {}),
     };
   }
 
-  /** The Secret of a location; anything without the label isn't one. */
-  async #secret(name: string): Promise<V1Secret> {
-    const secret = await kubeCall(
-      () => this.#core.readNamespacedSecret({ namespace: this.#namespace, name }),
-      `Location ${name}`,
-    );
-    if (secret.metadata?.labels?.[LOCATION_LABEL] !== 'true') {
-      throw new NotFoundError(`Location ${name} not found`);
-    }
-    return secret;
-  }
-
-  async #withHealth(secret: V1Secret, refresh = false): Promise<LocationSummary> {
-    const name = secret.metadata?.name ?? '';
-    const kubeconfig = Buffer.from(secret.data?.[KUBECONFIG_KEY] ?? '', 'base64').toString();
-    let spec: LocationSpec = {};
-    try {
-      spec = JSON.parse(secret.metadata?.annotations?.[LOCATION_SPEC_ANNOTATION] ?? '{}');
-    } catch {
-      // Hand-edited annotation; show the location without its settings.
-    }
+  async #summarize(
+    location: LocationResource,
+    kubeconfig: string | Error,
+    refresh: boolean,
+  ): Promise<LocationSummary> {
+    const name = location.metadata.name;
+    const { credentials: _credentials, crossplane: _crossplane, ...spec } = location.spec ?? {};
+    const status = location.status ?? {};
 
     let connection: LocationConnection;
     let health: Promise<LocationHealth>;
     try {
+      if (kubeconfig instanceof Error) throw kubeconfig;
       connection = parseKubeconfig(kubeconfig).connection;
       health = this.#probeCached(name, kubeconfig, refresh);
     } catch (e) {
-      // Edited outside the portal into something we won't load.
+      // No readable kubeconfig, or the Secret was edited into something we won't load.
       connection = { server: '-', context: '-', auth: '-', insecureSkipTlsVerify: false };
       health = Promise.resolve({
         status: 'unreachable',
@@ -310,9 +448,16 @@ export class LocationService {
       name,
       spec,
       connection,
+      providerConfig: Boolean(status.providerConfig),
+      status: {
+        ready: status.ready,
+        message: status.message,
+        connected: status.connected,
+        operators: status.operators,
+      },
       owner: spec.owner,
-      createdAt: secret.metadata?.creationTimestamp
-        ? new Date(secret.metadata.creationTimestamp).toISOString()
+      createdAt: location.metadata.creationTimestamp
+        ? new Date(location.metadata.creationTimestamp).toISOString()
         : undefined,
       health: await health,
     };
@@ -332,6 +477,13 @@ export class LocationService {
     this.#health.set(name, { at: Date.now(), result });
     return result;
   }
+}
+
+/** Drops empty strings, which the XRD's enums and patterns would reject. */
+function clean(spec: LocationSpec): LocationSpec {
+  return Object.fromEntries(
+    Object.entries(spec).filter(([, v]) => v !== undefined && v !== ''),
+  ) as LocationSpec;
 }
 
 export const locationServiceRef = createServiceRef<LocationService>({

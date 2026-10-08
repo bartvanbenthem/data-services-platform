@@ -1,18 +1,21 @@
 # Dependencies
 
-Everything the platform needs in the cluster before
+Everything the platform needs before
 [`01-operator/`](../01-operator/) and
 [`02-crossplane-api/`](../02-crossplane-api/) are installed, plus the
-`demo` Project (a namespace with its own Prometheus and Grafana).
+`demo` Project (a namespace with its own Prometheus and Grafana). The
+platform has a **control plane** (Crossplane, the APIs, the portal, each
+Project's Grafana; no databases) and **locations**, the clusters the
+databases run in. Each component goes where its column says.
 
-| Component | Needed for | Required |
-|---|---|---|
-| cert-manager | barman-cloud backup plugin | yes, unless `INSTALL_BARMAN=false` |
-| Prometheus Operator | `PodMonitor` / `PrometheusRule` per PostgresCluster, `Prometheus` per Project | for monitoring |
-| grafana-operator | `GrafanaDashboard` per PostgresCluster, `Grafana` per Project | for dashboards |
-| HAProxy Ingress | reaching Grafana from outside the cluster | optional |
+| Component | Needed for | Control plane | Locations |
+|---|---|---|---|
+| cert-manager | barman-cloud backup plugin | only for the portal's own database | yes, unless `INSTALL_BARMAN=false` |
+| Prometheus Operator | `Prometheus` per Project; `PodMonitor` / `PrometheusRule` per PostgresCluster | yes (the Prometheus the locations write to) | yes |
+| grafana-operator | `Grafana` per Project, `GrafanaDashboard` per PostgresCluster | yes | no |
+| HAProxy Ingress | Grafana from outside, and the remote-write endpoint the locations' Prometheus send to | yes | no |
 
-Install them in the order below.
+Install them in the order below, each in the clusters its row says.
 
 ## 1. cert-manager
 
@@ -70,8 +73,10 @@ kubectl get crd grafanas.grafana.integreatly.org
 
 ## 4. HAProxy Ingress (optional)
 
-You need this only to reach Grafana from outside the cluster. Any
-`networking.k8s.io/v1` ingress controller works.
+On the control plane: the projects' Grafana and the remote-write endpoint
+(`prometheus.remoteWrite` in `demo/project-defaults.yaml`) the locations'
+Prometheus send their metrics through. Without it Grafana shows no
+database metrics. Any `networking.k8s.io/v1` ingress controller works.
 
 ```sh
 helm upgrade -i haproxy-ingress kubernetes-ingress \
@@ -94,8 +99,11 @@ kubectl get svc -n haproxy-ingress   # EXTERNAL-IP is where ingress hosts must r
 A namespace with its own Prometheus and Grafana is a **Project**
 (`platform.cncp.nl/v1alpha1`, see
 [`02-crossplane-api`](../02-crossplane-api/README.md#the-project-api)), so
-this step runs *after* `01-operator/install.sh` and
-`02-crossplane-api/install/install.sh`.
+this step runs on the control plane *after* `02-crossplane-api/install/install.sh`
+and after registering the location the demo databases run in
+(`02-crossplane-api/install/add-location.sh`, with `01-operator/install.sh`
+run against that location first). `demo/project.yaml` names it
+`si-ske-demo`: change that to your location's name.
 
 - [`demo/project-defaults.yaml`](demo/project-defaults.yaml): the
   cluster-wide `EnvironmentConfig` every Project reads. It sets the Grafana
@@ -103,11 +111,13 @@ this step runs *after* `01-operator/install.sh` and
   kube-prometheus-stack's ServiceMonitors live (step 2). Edit the IP for a
   different cluster.
 - [`demo/project.yaml`](demo/project.yaml): the `demo` Project. Crossplane
-  creates the namespace, a Prometheus that scrapes every `PodMonitor` and
+  creates the namespace on the control plane and in the location, a
+  Prometheus in the location that scrapes every `PodMonitor` and
   `PrometheusRule` in it (plus the kubelet / kube-state-metrics /
-  node-exporter targets from step 2), and a Grafana with a `prometheus`
-  datasource, anonymous Viewer access and embedding allowed. The Grafana
-  carries `dashboards.paas.cncp.nl/scope=demo`, which every PostgresCluster's
+  node-exporter targets from step 2) and writes to the project's Prometheus
+  on the control plane, and there a Grafana with a `prometheus` datasource,
+  anonymous Viewer access and embedding allowed. The Grafana carries
+  `dashboards.paas.cncp.nl/scope=demo`, which every PostgresCluster's
   `GrafanaDashboard` in `demo` selects.
 
 ```sh
@@ -121,7 +131,7 @@ Verify:
 ```sh
 kubectl get project demo                # GRAFANA column: the ingress URL
 kubectl -n demo get prometheus,grafana,grafanadatasource,grafanadashboard
-kubectl -n demo port-forward svc/prometheus-operated 9090   # Status > Targets: CNPG pods, kubelet, kube-state-metrics up
+KUBECONFIG=<location> kubectl -n demo port-forward svc/prometheus-operated 9090   # in the location: Status > Targets: CNPG pods, kubelet, kube-state-metrics up
 kubectl -n demo get secret grafana-admin-credentials -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 -d; echo
 ```
 

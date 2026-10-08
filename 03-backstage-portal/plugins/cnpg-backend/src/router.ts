@@ -3,7 +3,7 @@ import {
   PermissionsService,
   RootConfigService,
 } from '@backstage/backend-plugin-api';
-import { InputError, NotAllowedError } from '@backstage/errors';
+import { ConflictError, InputError, NotAllowedError } from '@backstage/errors';
 import {
   AuthorizeResult,
   BasicPermission,
@@ -21,12 +21,16 @@ import {
   cnpgLocationReadPermission,
   cnpgLocationUpdatePermission,
   cnpgProjectCreatePermission,
+  cnpgProjectDeletePermission,
   cnpgProjectReadPermission,
   cnpgProjectUpdatePermission,
+  LOCAL_LOCATION,
   LOCATION_ENVIRONMENTS,
   LOCATION_PROVIDERS,
+  LocationSummary,
   Project,
   PostgresClusterSummary,
+  projectLocations,
   summarize,
   summarizeProject,
 } from '@internal/backstage-plugin-cnpg-common';
@@ -70,6 +74,8 @@ const ownerLabel = (owner: string | null | undefined) =>
 
 const logsQuery = z.object({
   pod: z.string().regex(/^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/, 'invalid pod name'),
+  /** Location the pod runs in; the cluster must run there. */
+  location: name.optional(),
   tailLines: z.coerce.number().int().min(1).max(5000).default(500),
   sinceSeconds: z.coerce.number().int().min(1).optional(),
   previous: z
@@ -107,7 +113,7 @@ const locationSpecSchema = z
 const kubeconfigText = z.string().min(1).max(MAX_KUBECONFIG_BYTES);
 
 const createLocationSchema = z.object({
-  name,
+  name: name.refine(v => v !== LOCAL_LOCATION, `"${LOCAL_LOCATION}" is reserved`),
   kubeconfig: kubeconfigText,
   /** Context to keep; defaults to the kubeconfig's current-context. */
   context: z.string().max(253).optional(),
@@ -124,6 +130,17 @@ const updateLocationSchema = z.object({
   context: z.string().max(253).optional(),
   dryRun: z.boolean().optional(),
 });
+
+/** Adds the Projects that use each location (as protected or recovery site). */
+function withProjects(location: LocationSummary, projects: Project[]): LocationSummary {
+  return {
+    ...location,
+    projects: projects
+      .filter(p => projectLocations(p).includes(location.name))
+      .map(p => p.metadata.name)
+      .sort(),
+  };
+}
 
 /** Adds the cluster's Project (same name as its namespace) and that project's Grafana. */
 function withProject(
@@ -188,18 +205,23 @@ export async function createRouter(options: {
     const ns = typeof req.query.namespace === 'string' ? req.query.namespace : undefined;
     const [items, projects] = await Promise.all([k8s.list(ns), k8s.listProjects()]);
     const byName = new Map(projects.map(p => [p.metadata.name, p]));
-    res.json({ items: items.map(c => withProject(summarize(c), byName.get(c.metadata.namespace))) });
+    res.json({
+      items: items.map(c => {
+        const project = byName.get(c.metadata.namespace);
+        return withProject(summarize(c, project), project);
+      }),
+    });
   });
 
   router.get('/clusters/:namespace/:name', async (req, res) => {
     await authorize(req, cnpgClusterReadPermission);
     const p = params(req);
     const [details, project] = await Promise.all([
-      k8s.details(p.namespace, p.name),
+      k8s.details(p.namespace, p.name, location => locations.kubeConfig(location)),
       // Not a project namespace, or no Project API: no project info.
       k8s.getProject(p.namespace).catch(() => undefined),
     ]);
-    res.json({ ...details, summary: withProject(details.summary, project) });
+    res.json({ ...details, summary: withProject(summarize(details.resource, project), project) });
   });
 
   router.get('/clusters/:namespace/:name/logs', async (req, res) => {
@@ -207,21 +229,26 @@ export async function createRouter(options: {
     const p = params(req);
     const q = logsQuery.safeParse(req.query);
     if (!q.success) throw new InputError(q.error.toString());
-    res.json(await k8s.logs(p.namespace, p.name, q.data));
+    res.json(await k8s.logs(p.namespace, p.name, q.data, location => locations.kubeConfig(location)));
   });
 
   // Locations: Kubernetes clusters the platform can use. The kubeconfig goes
   // in, never out; responses carry only server, context and auth type.
   router.get('/locations', async (req, res) => {
     await authorize(req, cnpgLocationReadPermission);
-    res.json({ items: await locations.list() });
+    const [items, projects] = await Promise.all([locations.list(), k8s.listProjects()]);
+    res.json({ items: items.map(l => withProjects(l, projects)) });
   });
 
   router.get('/locations/:name', async (req, res) => {
     await authorize(req, cnpgLocationReadPermission);
     const p = z.object({ name }).safeParse(req.params);
     if (!p.success) throw new InputError(p.error.toString());
-    res.json(await locations.get(p.data.name));
+    const [location, projects] = await Promise.all([
+      locations.get(p.data.name),
+      k8s.listProjects(),
+    ]);
+    res.json(withProjects(location, projects));
   });
 
   // Probe again now instead of using the cached result.
@@ -229,7 +256,11 @@ export async function createRouter(options: {
     await authorize(req, cnpgLocationReadPermission);
     const p = z.object({ name }).safeParse(req.params);
     if (!p.success) throw new InputError(p.error.toString());
-    res.json(await locations.get(p.data.name, { refresh: true }));
+    const [location, projects] = await Promise.all([
+      locations.get(p.data.name, { refresh: true }),
+      k8s.listProjects(),
+    ]);
+    res.json(withProjects(location, projects));
   });
 
   router.post('/locations', async (req, res) => {
@@ -267,6 +298,14 @@ export async function createRouter(options: {
     await authorize(req, cnpgLocationDeletePermission);
     const p = z.object({ name }).safeParse(req.params);
     if (!p.success) throw new InputError(p.error.toString());
+    // Without its credentials Crossplane can neither update nor clean up
+    // what runs there, so a location goes only once no Project uses it.
+    const users = withProjects(await locations.get(p.data.name), await k8s.listProjects()).projects;
+    if (users?.length) {
+      throw new ConflictError(
+        `Location ${p.data.name} is used by project ${users.join(', ')}; a project's locations can't change, so it can go once those projects are deleted`,
+      );
+    }
     await locations.delete(p.data.name);
     res.json({ status: 'deleted' });
   });
@@ -324,6 +363,23 @@ export async function createRouter(options: {
     res.json(
       await k8s.patchProject({ name: p.data.name, spec, labels: ownerLabel(owner), dryRun }),
     );
+  });
+
+  router.delete('/projects/:name', async (req, res) => {
+    await authorize(req, cnpgProjectDeletePermission);
+    const p = z.object({ name }).safeParse(req.params);
+    if (!p.success) throw new InputError(p.error.toString());
+    await k8s.getProject(p.data.name);
+    // Deleting the project deletes its namespace, and with it every
+    // PostgresCluster and its databases: only an empty project goes.
+    const clusters = (await k8s.list(p.data.name)).map(c => c.metadata.name);
+    if (clusters.length) {
+      throw new ConflictError(
+        `Project ${p.data.name} still has PostgreSQL clusters: ${clusters.sort().join(', ')}; delete them first`,
+      );
+    }
+    await k8s.deleteProject(p.data.name);
+    res.json({ status: 'deleting' });
   });
 
   router.post('/clusters', async (req, res) => {

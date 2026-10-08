@@ -1,0 +1,27 @@
+# The Projects the PostgresCluster composition reads (extra resource
+# "project", named after the XR's namespace): their spec.locations say where
+# the clusters run. Cases without required/<case>.yaml use this file.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: demo
+spec:
+  locations:
+    protected: si-ske-demo
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: sandbox
+spec:
+  locations:
+    protected: si-ske-demo
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: payments
+spec:
+  locations:
+    protected: si-ske-demo
+    recovery: onprem-ams

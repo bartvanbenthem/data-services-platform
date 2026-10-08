@@ -1,8 +1,9 @@
 # Guardrails for Projects (ValidatingAdmissionPolicy, Kubernetes >= 1.30).
 #
-# Deleting a Project deletes its namespace, and with it every PostgresCluster,
-# its volumes and its Prometheus/Grafana. These two policies make that an
-# explicit decision:
+# Deleting a Project deletes its namespace, and with it every PostgresCluster
+# (and so its CNPG clusters and volumes in the locations) and its
+# Prometheus/Grafana. The first two policies make that an explicit decision;
+# the third keeps PostgresClusters in their Project's locations:
 #
 #   1. A Project with spec.deletionProtection: true (the default) can't be
 #      deleted. Patch it to false first.
@@ -76,3 +77,87 @@ spec:
       matchExpressions:
         - key: platform.cncp.nl/project
           operator: Exists
+---
+# 3. PostgresClusters run in their Project's locations, never on the control
+#    plane: a new one needs a namespace whose Project has a protected
+#    location, and turning on geoReplication needs a recovery location
+#    (namespace annotations platform.cncp.nl/protected-location and
+#    platform.cncp.nl/recovery-location, set by the Project composition).
+#    New databases must also find those locations open: the Project
+#    composition lists Locations with schedulable: false in
+#    platform.cncp.nl/unschedulable-locations. Existing clusters there stay
+#    editable. Backups without a destinationPath of their own go to the
+#    Project's backup bucket, so newly relying on it needs a Project that has
+#    one (annotation platform.cncp.nl/backup-bucket).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: platform.cncp.nl-postgrescluster-locations
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [cnpg.cncp.nl]
+        apiVersions: ["*"]
+        resources: [postgresclusters]
+        operations: [CREATE, UPDATE]
+  variables:
+    - name: annotations
+      expression: "has(namespaceObject.metadata.annotations) ? namespaceObject.metadata.annotations : {}"
+    - name: protected
+      expression: "'platform.cncp.nl/protected-location' in variables.annotations ? variables.annotations['platform.cncp.nl/protected-location'] : ''"
+    - name: recovery
+      expression: "'platform.cncp.nl/recovery-location' in variables.annotations ? variables.annotations['platform.cncp.nl/recovery-location'] : ''"
+    - name: closed
+      expression: >-
+        'platform.cncp.nl/unschedulable-locations' in variables.annotations
+        ? variables.annotations['platform.cncp.nl/unschedulable-locations'].split(',')
+        : []
+    - name: geo
+      expression: "has(object.spec.geoReplication) && has(object.spec.geoReplication.enabled) && object.spec.geoReplication.enabled"
+    # geoReplication newly switched on (or a new cluster with it).
+    - name: geoAdded
+      expression: >-
+        variables.geo && (oldObject == null || !has(oldObject.spec.geoReplication)
+        || !has(oldObject.spec.geoReplication.enabled) || !oldObject.spec.geoReplication.enabled)
+    # backup.enabled without destinationPath: the Project's bucket.
+    - name: usesBucket
+      expression: >-
+        has(object.spec.backup) && has(object.spec.backup.enabled) && object.spec.backup.enabled
+        && !has(object.spec.backup.destinationPath)
+    - name: usedBucket
+      expression: >-
+        oldObject != null && has(oldObject.spec.backup) && has(oldObject.spec.backup.enabled)
+        && oldObject.spec.backup.enabled && !has(oldObject.spec.backup.destinationPath)
+  validations:
+    - expression: "oldObject != null || variables.protected != ''"
+      messageExpression: >-
+        'namespace ' + namespaceObject.metadata.name + ' is not a Project with a protected location; '
+        + 'PostgresClusters run in a Project\'s locations, never on the control plane'
+      reason: Forbidden
+    - expression: "!variables.geoAdded || variables.recovery != ''"
+      messageExpression: >-
+        'geoReplication needs a recovery location; set spec.locations.recovery on Project '
+        + namespaceObject.metadata.name + ' first'
+      reason: Forbidden
+    - expression: "oldObject != null || !(variables.protected in variables.closed)"
+      messageExpression: >-
+        'location ' + variables.protected + ' (protected) is closed to new databases (Location spec.schedulable: false)'
+      reason: Forbidden
+    - expression: "!variables.usesBucket || variables.usedBucket || 'platform.cncp.nl/backup-bucket' in variables.annotations"
+      messageExpression: >-
+        'Project ' + namespaceObject.metadata.name + ' has no backup bucket (Project spec.backup, COSI classes in '
+        + 'project-defaults); set backup.destinationPath and backup.s3Credentials instead'
+      reason: Forbidden
+    - expression: "!variables.geoAdded || !(variables.recovery in variables.closed)"
+      messageExpression: >-
+        'location ' + variables.recovery + ' (recovery) is closed to new replica clusters (Location spec.schedulable: false)'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: platform.cncp.nl-postgrescluster-locations
+spec:
+  policyName: platform.cncp.nl-postgrescluster-locations
+  validationActions: [Deny]

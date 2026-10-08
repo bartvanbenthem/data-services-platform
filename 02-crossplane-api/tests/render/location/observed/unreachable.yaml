@@ -1,0 +1,22 @@
+# Observed state for xr/unreachable.yaml: the ClusterProviderConfig exists,
+# but provider-kubernetes can't reach the API server.
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: si-ske-demo
+  annotations:
+    crossplane.io/composition-resource-name: providerconfig
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: si-ske-demo-prometheus-role
+  namespace: cnpg-locations
+  annotations:
+    crossplane.io/composition-resource-name: prometheus-role
+status:
+  conditions:
+    - type: Synced
+      status: "False"
+      reason: ReconcileError
+      message: "connect failed: dial tcp 10.0.0.9:6443: i/o timeout"

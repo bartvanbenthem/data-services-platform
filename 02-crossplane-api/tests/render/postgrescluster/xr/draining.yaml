@@ -1,0 +1,22 @@
+# geoReplication switched off while the primary is in the recovery site: the
+# replica cluster stays and the primary is switched back to the protected
+# site first (it would otherwise be deleted with the replica cluster).
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db
+  namespace: payments
+spec:
+  geoReplication:
+    enabled: false
+  backup:
+    enabled: true
+    destinationPath: s3://pg-backups/payments
+    s3Credentials:
+      secretName: orders-db-s3
+status:
+  sites:
+    protected: si-ske-demo
+    recovery: onprem-ams
+  primaryLocation: onprem-ams
+  promotionToken: eyJsc24iOiIwLzMwMDAwMDAifQ==

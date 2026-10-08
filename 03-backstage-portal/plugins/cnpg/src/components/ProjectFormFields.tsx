@@ -1,5 +1,5 @@
-import { Switch, Text, TextField } from '@backstage/ui';
-import type { Project } from '@internal/backstage-plugin-cnpg-common';
+import { Select, Switch, Text, TextField } from '@backstage/ui';
+import type { LocationSummary, Project } from '@internal/backstage-plugin-cnpg-common';
 import { Section } from './common';
 import { ProjectForm } from './projectForm';
 
@@ -7,7 +7,9 @@ import { ProjectForm } from './projectForm';
  * Every section of the project form, shared by the create and edit pages.
  * With `original` (edit mode) the name is read-only and the Prometheus
  * volume says it can only grow. `lockedAccess` is an access list the form
- * can't represent; it's shown, not edited.
+ * can't represent; it's shown, not edited. `locations` are the registered
+ * locations a project can use as its sites. Once set, a site is read-only;
+ * a recovery site can still be added.
  */
 export const ProjectFormFields = ({
   form,
@@ -15,16 +17,43 @@ export const ProjectFormFields = ({
   err,
   original,
   lockedAccess,
+  locations,
 }: {
   form: ProjectForm;
   setForm: (update: (f: ProjectForm) => ProjectForm) => void;
   err: (key: keyof ProjectForm) => string | undefined;
   original?: ProjectForm;
   lockedAccess?: Project['spec']['access'];
+  locations?: LocationSummary[];
 }) => {
   const editing = Boolean(original);
   const set = <K extends keyof ProjectForm>(key: K) => (value: ProjectForm[K]) =>
     setForm(f => ({ ...f, [key]: value }));
+
+  const known = new Map((locations ?? []).map(l => [l.name, l]));
+  const describeLocation = (name: string) => {
+    const l = known.get(name);
+    if (!l) return `${name} (not registered)`;
+    const notes = [
+      l.spec.displayName,
+      l.spec.environment,
+      l.spec.region,
+      !l.providerConfig && 'not usable by Crossplane yet',
+      l.spec.schedulable === false && 'closed for new databases',
+    ].filter(Boolean);
+    return notes.length ? `${name} (${notes.join(', ')})` : name;
+  };
+  // A location closed for new databases can't be picked.
+  const open = (name: string) =>
+    known.get(name)?.spec.schedulable !== false && known.get(name)?.providerConfig !== false;
+  const options = (exclude: string) =>
+    [...known.keys()]
+      .filter(name => name !== exclude)
+      .sort()
+      .map(name => ({ id: name, label: describeLocation(name), disabled: !open(name) }));
+  const fixedProtected = Boolean(original?.protectedLocation);
+  const fixedRecovery = Boolean(original?.recoveryLocation);
+  const NONE = '__none__';
 
   return (
     <>
@@ -57,6 +86,51 @@ export const ProjectFormFields = ({
           description={err('description')}
           isInvalid={Boolean(err('description'))}
         />
+      </Section>
+
+      <Section
+        title="Locations"
+        description="The Kubernetes clusters the project's databases run in; the control plane runs none. Each gets the namespace, access, quota and a Prometheus that forwards to this project's Grafana."
+      >
+        {fixedProtected ? (
+          <TextField
+            label="Protected location"
+            isDisabled
+            value={describeLocation(form.protectedLocation)}
+            description="Where the databases run; fixed after creation."
+          />
+        ) : (
+          <Select
+            label="Protected location"
+            isRequired
+            value={form.protectedLocation || null}
+            onChange={k => set('protectedLocation')(String(k ?? ''))}
+            options={options(form.recoveryLocation)}
+            placeholder={known.size ? 'Pick a location' : 'No locations registered yet'}
+            description={err('protectedLocation') ?? 'Where the databases run. Fixed after creation.'}
+            isInvalid={Boolean(err('protectedLocation'))}
+          />
+        )}
+        {fixedRecovery ? (
+          <TextField
+            label="Recovery location"
+            isDisabled
+            value={describeLocation(form.recoveryLocation)}
+            description="Where geo-replicated databases keep a replica cluster; fixed once set."
+          />
+        ) : (
+          <Select
+            label="Recovery location"
+            value={form.recoveryLocation || NONE}
+            onChange={k => set('recoveryLocation')(k === NONE ? '' : String(k ?? ''))}
+            options={[{ id: NONE, label: 'none' }, ...options(form.protectedLocation)]}
+            description={
+              err('recoveryLocation') ??
+              'Optional: where databases with geo replication keep a replica cluster that can take over. Can be added later; fixed once set.'
+            }
+            isInvalid={Boolean(err('recoveryLocation'))}
+          />
+        )}
       </Section>
 
       <Section

@@ -12,6 +12,13 @@ data:
       # (kubectl get svc -n haproxy-ingress). Change it for another cluster.
       hostTemplate: grafana-{project}.188.34.124.213.nip.io
   prometheus:
+    # The locations' Prometheus send their samples here, through this
+    # cluster's ingress (the same HAProxy IP).
+    remoteWrite:
+      hostTemplate: prometheus-{project}.188.34.124.213.nip.io
+      scheme: http
+      className: haproxy
+    # These describe the locations (where kube-prometheus-stack runs there).
     clusterMetrics:
       namespace: prometheus-operator-system
       serviceMonitorLabels:

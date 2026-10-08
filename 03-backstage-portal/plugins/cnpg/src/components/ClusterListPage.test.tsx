@@ -19,6 +19,10 @@ const cluster = (over: Partial<PostgresClusterSummary>): PostgresClusterSummary 
   deleting: false,
   pooler: true,
   backup: false,
+  location: 'ske',
+  geoReplication: false,
+  primaryLocation: 'ske',
+  primarySite: 'protected',
   ...over,
 });
 

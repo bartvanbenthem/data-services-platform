@@ -1,16 +1,18 @@
 /**
- * Locations: the Kubernetes clusters the platform can run data services in.
- * Each one is a Secret in the platform cluster (namespace
- * `cnpg.locations.namespace`) holding a kubeconfig under the `kubeconfig` key
- * -- the layout Crossplane's provider-kubernetes and provider-helm read --
- * with the settings below as an annotation. The kubeconfig never leaves the
- * backend.
+ * Locations: the Kubernetes clusters the platform runs data services in; the
+ * control plane (where Crossplane and the portal run) runs none. Each one is
+ * a Location (platform.cncp.nl/v1alpha1, cluster-scoped, see
+ * 02-crossplane-api/apis/location) with the settings below, pointing at a
+ * Secret on the control plane (namespace `cnpg.locations.namespace`) that
+ * holds its kubeconfig under the `kubeconfig` key. The Location composition
+ * creates the provider-kubernetes ClusterProviderConfig the Project and
+ * PostgresCluster compositions place objects through. The kubeconfig never
+ * leaves the backend. A Project uses one location as its protected site and
+ * optionally another as its recovery site.
  */
 
 /** Label on every location Secret. */
 export const LOCATION_LABEL = 'platform.cncp.nl/location';
-/** Annotation on the Secret holding {@link LocationSpec} as JSON. */
-export const LOCATION_SPEC_ANNOTATION = 'platform.cncp.nl/location-spec';
 
 export const LOCATION_ENVIRONMENTS = ['production', 'acceptance', 'test', 'development'] as const;
 export type LocationEnvironment = (typeof LOCATION_ENVIRONMENTS)[number];
@@ -26,7 +28,7 @@ export const LOCATION_PROVIDERS = [
 ] as const;
 export type LocationProvider = (typeof LOCATION_PROVIDERS)[number];
 
-/** What a platform admin says about a location (everything but the kubeconfig). */
+/** What a platform admin says about a location: the Location's spec minus its credentials. */
 export interface LocationSpec {
   displayName?: string;
   description?: string;
@@ -74,10 +76,27 @@ export interface LocationConnection {
   insecureSkipTlsVerify: boolean;
 }
 
+/** The Location's status, as its composition reports it. */
+export interface LocationStatus {
+  /** Connected and both operators installed. */
+  ready?: boolean;
+  message?: string;
+  /** Crossplane reached the API server with the kubeconfig. */
+  connected?: boolean;
+  /** Operators found there; unset until connected. */
+  operators?: { cloudnativepg?: boolean; prometheusOperator?: boolean };
+}
+
 export interface LocationSummary {
   name: string;
   spec: LocationSpec;
   connection: LocationConnection;
+  /** Whether its ClusterProviderConfig exists, i.e. Crossplane can place objects there. */
+  providerConfig: boolean;
+  /** What Crossplane sees (the portal's own probe is in {@link health}). */
+  status?: LocationStatus;
+  /** Projects that list this location (filled in by the backend). */
+  projects?: string[];
   owner?: string;
   createdAt?: string;
   updatedAt?: string;

@@ -1,8 +1,12 @@
 # The "demo" namespace as a Project: Prometheus and Grafana come with it
-# (they used to be hand-written prometheus.yaml / grafana.yaml here).
+# (they used to be hand-written prometheus.yaml / grafana.yaml here). Its
+# databases run in the location named below: register it first
+# (02-crossplane-api/install/add-location.sh), or change the name.
 apiVersion: platform.cncp.nl/v1alpha1
 kind: Project
 metadata:
   name: demo
 spec:
   description: Demo databases
+  locations:
+    protected: si-ske-demo

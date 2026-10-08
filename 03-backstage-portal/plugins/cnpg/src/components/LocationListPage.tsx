@@ -102,6 +102,16 @@ export const LocationListPage = () => {
                 closed for new databases
               </Text>
             )}
+            {!l.providerConfig && (
+              <Text variant="body-x-small" color="secondary">
+                not usable by Crossplane yet
+              </Text>
+            )}
+            {Boolean(l.projects?.length) && (
+              <Text variant="body-x-small" color="secondary">
+                {`${l.projects!.length} project${l.projects!.length === 1 ? '' : 's'}`}
+              </Text>
+            )}
           </Flex>
         </Cell>
       ),

@@ -48,6 +48,7 @@ describe('locationForm', () => {
       name: 'prod-ams',
       spec,
       connection: { server: 's', context: 'c', auth: 'token', insecureSkipTlsVerify: false },
+      providerConfig: true,
     });
     expect(form.kubeconfig).toBe('');
     expect(toLocationSpec(form)).toEqual({

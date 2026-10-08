@@ -1,3 +1,4 @@
+# Both sites: databases run in si-ske-demo, replica clusters in onprem-ams.
 apiVersion: platform.cncp.nl/v1alpha1
 kind: Project
 metadata:
@@ -5,6 +6,9 @@ metadata:
 spec:
   owner: team-payments
   description: Payment services
+  locations:
+    protected: si-ske-demo
+    recovery: onprem-ams
   access:
     - group: payments-devs
       role: edit

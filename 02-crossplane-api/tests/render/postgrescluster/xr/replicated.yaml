@@ -1,0 +1,18 @@
+# Primary in the protected location, a replica cluster in the recovery
+# location fed from the shared object store (CloudNativePG distributed
+# topology).
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db
+  namespace: payments
+spec:
+  geoReplication:
+    enabled: true
+    instances: 2
+  backup:
+    enabled: true
+    destinationPath: s3://pg-backups/payments
+    endpointURL: https://object.storage.eu01.onstackit.cloud
+    s3Credentials:
+      secretName: orders-db-s3

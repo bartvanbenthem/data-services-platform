@@ -46,6 +46,16 @@ export const cnpgProjectUpdatePermission = createPermission({
   attributes: { action: 'update' },
 });
 
+/**
+ * Delete a Project that no longer has PostgreSQL clusters: its namespace,
+ * Prometheus and Grafana (and their metrics) on the control plane go with
+ * it. The portal turns its deletionProtection off for the delete.
+ */
+export const cnpgProjectDeletePermission = createPermission({
+  name: 'cnpg.project.delete',
+  attributes: { action: 'delete' },
+});
+
 /** List and inspect locations (never their kubeconfig) and run their health checks. */
 export const cnpgLocationReadPermission = createPermission({
   name: 'cnpg.location.read',
@@ -81,6 +91,7 @@ export const cnpgPermissions = [
   cnpgProjectReadPermission,
   cnpgProjectCreatePermission,
   cnpgProjectUpdatePermission,
+  cnpgProjectDeletePermission,
   cnpgLocationReadPermission,
   cnpgLocationCreatePermission,
   cnpgLocationUpdatePermission,

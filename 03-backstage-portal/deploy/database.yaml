@@ -1,17 +1,23 @@
-# Backstage's own PostgreSQL, provisioned through the platform's own API.
-# CNPG writes host/port/user/password/dbname into Secret backstage-db-app,
-# which backstage.yaml maps onto the POSTGRES_* variables.
-apiVersion: cnpg.cncp.nl/v1alpha1
-kind: PostgresCluster
+# Backstage's own PostgreSQL. The control plane runs no tenant databases (no
+# PostgresCluster can live here), so this is a plain CloudNativePG Cluster:
+# install ../../01-operator on the control plane for it. CNPG writes
+# host/port/user/password/dbname into Secret backstage-db-app, which
+# backstage.yaml maps onto the POSTGRES_* variables.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
 metadata:
   name: backstage-db
   namespace: backstage
-  labels:
-    backstage.io/owner: guests
 spec:
   instances: 2
+  imageCatalogRef:
+    apiGroup: postgresql.cnpg.io
+    kind: ClusterImageCatalog
+    name: postgresql-standard-trixie
+    major: 17
   storage:
     size: 5Gi
-  database:
-    name: backstage
-    owner: backstage
+  bootstrap:
+    initdb:
+      database: backstage
+      owner: backstage

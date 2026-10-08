@@ -66,8 +66,9 @@ const DeleteDialog = ({
       <DialogBody>
         <Flex direction="column" gap="3">
           <Text>
-            The portal forgets this cluster and deletes its stored kubeconfig. Nothing on the
-            cluster itself changes.
+            The portal forgets this cluster: it deletes the Location (and with it the
+            ClusterProviderConfig Crossplane reaches it through) and the stored kubeconfig.
+            Nothing on the cluster itself changes. Only possible once no project lists it.
           </Text>
           <TextField label={`Type "${name}" to confirm`} value={confirm} onChange={setConfirm} />
           {error && <ErrorAlert error={error} />}
@@ -186,6 +187,25 @@ export const LocationDetailPage = () => {
                     ['Owner', spec.owner || '-'],
                     ['Default StorageClass', spec.storageClass || "cluster's default"],
                     ['New databases', spec.schedulable === false ? 'not allowed' : 'allowed'],
+                    [
+                      'Crossplane',
+                      value.status?.message ??
+                        (value.providerConfig
+                          ? <>
+                              ClusterProviderConfig <Mono>{value.name}</Mono>
+                            </>
+                          : 'waiting for the Location composition'),
+                    ],
+                    [
+                      'Operators',
+                      value.status?.operators
+                        ? [
+                            `CloudNativePG ${value.status.operators.cloudnativepg ? 'installed' : 'missing'}`,
+                            `Prometheus Operator ${value.status.operators.prometheusOperator ? 'installed' : 'missing'}`,
+                          ].join(', ')
+                        : 'unknown until Crossplane connects',
+                    ],
+                    ['Projects', value.projects?.length ? value.projects.join(', ') : 'none'],
                     ['Added', value.createdAt ? `${age(value.createdAt)} ago` : '-'],
                   ]}
                 />

@@ -1,6 +1,9 @@
 # A Project is a namespace with its own Prometheus and Grafana, ready for
 # PostgresClusters: create one with `namespace: team-payments` and its
 # metrics, alerts and dashboard land in this project's Prometheus/Grafana.
+# The databases run in the project's locations (Kubernetes clusters
+# registered with install/add-location.sh or the portal), never on the
+# control plane.
 apiVersion: platform.cncp.nl/v1alpha1
 kind: Project
 metadata:
@@ -8,6 +11,12 @@ metadata:
 spec:
   owner: team-payments
   description: Payment services
+  locations:
+    # Where the databases run. Fixed after creation.
+    protected: si-ske-demo
+    # Optional: where PostgresClusters with geoReplication keep a replica
+    # cluster that can take over. Can be added later, then fixed.
+    recovery: onprem-ams
   # Kubernetes groups from your IdP.
   access:
     - group: payments-devs

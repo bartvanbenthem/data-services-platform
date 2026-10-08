@@ -2,6 +2,7 @@ import { useApi, useRouteRef } from '@backstage/frontend-plugin-api';
 import { Container, Flex, Grid, Header } from '@backstage/ui';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import useAsync from 'react-use/esm/useAsync';
 import { stringify } from 'yaml';
 import { cnpgApiRef } from '../api';
 import { projectRouteRef } from '../routes';
@@ -20,6 +21,8 @@ export const CreateProjectPage = () => {
   const navigate = useNavigate();
   const projectLink = useRouteRef(projectRouteRef);
 
+  // Without permission to read locations the form just offers none.
+  const { value: locations } = useAsync(() => api.listLocations().catch(() => []), [api]);
   const [form, setForm] = useState<ProjectForm>(defaultProjectForm());
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState<'validate' | 'create'>();
@@ -69,7 +72,7 @@ export const CreateProjectPage = () => {
         <Grid.Root columns={{ initial: '1', lg: '3' }} gap="4">
           <Grid.Item colSpan={{ initial: '1', lg: '2' }}>
             <Flex direction="column" gap="4">
-              <ProjectFormFields form={form} setForm={update} err={err} />
+              <ProjectFormFields form={form} setForm={update} err={err} locations={locations} />
             </Flex>
           </Grid.Item>
 

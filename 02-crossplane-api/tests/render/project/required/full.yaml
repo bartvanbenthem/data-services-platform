@@ -15,3 +15,23 @@ data:
       hostTemplate: grafana-{project}.example.com
       scheme: https
       tlsSecretName: wildcard-example-com
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: si-ske-demo
+spec:
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: si-ske-demo
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: onprem-ams
+spec:
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: onprem-ams

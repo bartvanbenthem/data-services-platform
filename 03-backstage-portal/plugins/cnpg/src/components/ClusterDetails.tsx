@@ -12,11 +12,12 @@ import {
   Text,
   useTable,
 } from '@backstage/ui';
-import type {
-  ClusterEvent,
-  Condition,
-  InstancePod,
-  PostgresClusterDetails,
+import {
+  type ClusterEvent,
+  type ClusterLocationStatus,
+  type Condition,
+  type InstancePod,
+  type PostgresClusterDetails,
 } from '@internal/backstage-plugin-cnpg-common';
 import { ReactNode } from 'react';
 import { age, Fields, health, Mono } from './common';
@@ -70,9 +71,16 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
   const ns = summary.namespace;
   const h = health(summary);
 
-  const podRows = pods.map(p => ({ ...p, id: p.name }));
+  // Every location's pods have the same names (orders-db-1, ...).
+  const podRows = pods.map(p => ({ ...p, id: `${p.location}/${p.name}` }));
   const conditionRows = (status.conditions ?? []).map(c => ({ ...c, id: c.type }));
   const eventRows = events.map((e, i) => ({ ...e, id: `${i}` }));
+  const locationRows = (status.locations ?? []).map(l => ({ ...l, id: l.location }));
+  const multiLocation = locationRows.length > 1;
+  const locationColumn = <T extends { location: string }>() =>
+    multiLocation
+      ? [{ id: 'location', label: 'Location', cell: (r: T) => <CellText title={r.location} /> }]
+      : [];
 
   return (
     <Flex direction="column" gap="4">
@@ -83,6 +91,14 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
           description={summary.message}
         />
       )}
+      {details.unreachable?.map(u => (
+        <Alert
+          key={u.location}
+          status="warning"
+          title={`Can't read location ${u.location}`}
+          description={`Its pods and events are missing below: ${u.message}`}
+        />
+      ))}
 
       <Grid.Root columns={{ initial: '1', md: '2' }} gap="4">
         <Section title="Overview">
@@ -91,6 +107,9 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
               ['Phase', summary.phase],
               ['Instances ready', `${summary.readyInstances} / ${summary.instances}`],
               ['Primary', summary.currentPrimary ?? '-'],
+              ['Location', multiLocation
+                ? `${summary.primaryLocation} (primary, ${summary.primarySite} site) + replica cluster in ${locationRows.find(l => l.location !== summary.primaryLocation)?.location}`
+                : summary.location || 'not placed yet'],
               ['PostgreSQL', status.image ? <Mono>{status.image.split('@')[0]}</Mono> : `${spec.postgresVersion ?? '-'}`],
               ['Timeline', cnpgStatus?.timelineID ? String(cnpgStatus.timelineID) : '-'],
               ['Owner', summary.owner ?? '-'],
@@ -109,6 +128,11 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
                 : []),
               ...(status.endpoints?.poolerReadOnly
                 ? [['Pooler (ro)', <Mono>{status.endpoints.poolerReadOnly}:5432</Mono>] as [string, ReactNode]]
+                : []),
+              ...(summary.primaryLocation
+                ? [['In location', multiLocation
+                    ? `${summary.primaryLocation}: the services and Secret exist under the same names in both sites`
+                    : summary.primaryLocation] as [string, ReactNode]]
                 : []),
               ['Database', `${spec.database?.name ?? 'app'} (owner ${spec.database?.owner ?? 'app'})`],
               ['Credentials', <Mono>Secret {ns}/{status.secrets?.app}</Mono>],
@@ -156,12 +180,39 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
         </Section>
       </Grid.Root>
 
+      {multiLocation && (
+        <Section title="Sites">
+          <StaticTable<ClusterLocationStatus & { id: string }>
+            rows={locationRows}
+            empty="No locations reported yet."
+            columns={[
+              { id: 'location', label: 'Location', isRowHeader: true, cell: l => <CellText title={l.location} /> },
+              { id: 'site', label: 'Site', cell: l => <CellText title={l.site ?? '-'} /> },
+              {
+                id: 'role',
+                label: 'Role',
+                cell: l => (
+                  <CellText
+                    title={l.role}
+                    description={l.role === 'promoting' ? 'waiting for the demotion token' : undefined}
+                  />
+                ),
+              },
+              { id: 'phase', label: 'Phase', cell: l => <CellText title={l.phase ?? '-'} /> },
+              { id: 'ready', label: 'Instances ready', cell: l => <CellText title={`${l.readyInstances ?? 0}/${l.instances ?? 0}`} /> },
+              { id: 'primary', label: 'Primary instance', cell: l => <CellText title={l.currentPrimary || '-'} /> },
+            ]}
+          />
+        </Section>
+      )}
+
       <Section title="Instances">
         <StaticTable<InstancePod & { id: string }>
           rows={podRows}
           empty="No pods yet."
           columns={[
             { id: 'name', label: 'Pod', isRowHeader: true, cell: p => <CellText title={p.name} /> },
+            ...locationColumn<InstancePod & { id: string }>(),
             { id: 'role', label: 'Role', cell: p => <CellText title={p.role} /> },
             { id: 'phase', label: 'Phase', cell: p => <CellText title={p.phase} /> },
             { id: 'ready', label: 'Ready', cell: p => <CellText title={p.ready ? 'yes' : 'no'} /> },
@@ -192,6 +243,7 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
           columns={[
             { id: 'type', label: 'Type', cell: e => <CellText title={e.type} /> },
             { id: 'reason', label: 'Reason', isRowHeader: true, cell: e => <CellText title={e.reason} /> },
+            ...locationColumn<ClusterEvent & { id: string }>(),
             { id: 'object', label: 'Object', cell: e => <CellText title={e.object} /> },
             { id: 'message', label: 'Message', cell: e => <CellText title={e.message} /> },
             { id: 'last', label: 'Last seen', cell: e => <CellText title={`${age(e.lastSeen)} ago${e.count > 1 ? ` (×${e.count})` : ''}`} /> },

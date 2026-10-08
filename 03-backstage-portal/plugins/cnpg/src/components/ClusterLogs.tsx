@@ -17,30 +17,41 @@ type View = 'parsed' | 'raw';
  * Only the pod's current (or, with "Previous container", last crashed)
  * container: older logs need a log store such as Loki.
  */
+/** Pods are picked by location and name: every location has an orders-db-1. */
+const podKey = (p: InstancePod) => `${p.location}/${p.name}`;
+
 export const ClusterLogs = ({
   namespace,
   name,
   pods,
   currentPrimary,
+  primaryLocation,
 }: {
   namespace: string;
   name: string;
   pods: InstancePod[];
   currentPrimary?: string;
+  primaryLocation?: string;
 }) => {
   const api = useApi(cnpgApiRef);
-  const fallback = pods.find(p => p.name === currentPrimary)?.name ?? pods[0]?.name;
+  const multiLocation = new Set(pods.map(p => p.location)).size > 1;
+  const fallback =
+    pods.find(p => p.name === currentPrimary && (!primaryLocation || p.location === primaryLocation)) ??
+    pods[0];
   const [selected, setSelected] = useState<string>();
   // The selected pod can disappear (failover, scale-down): fall back to the primary.
-  const pod = pods.some(p => p.name === selected) ? selected : fallback;
+  const current = pods.find(p => podKey(p) === selected) ?? fallback;
+  const pod = current?.name;
+  const location = current?.location;
   const [tailLines, setTailLines] = useState(500);
   const [previous, setPrevious] = useState(false);
   const [follow, setFollow] = useState(true);
   const [view, setView] = useState<View>('parsed');
 
   const state = useAsyncRetry(
-    async () => (pod ? api.getPodLogs(namespace, name, { pod, tailLines, previous }) : undefined),
-    [api, namespace, name, pod, tailLines, previous],
+    async () =>
+      pod ? api.getPodLogs(namespace, name, { pod, location, tailLines, previous }) : undefined,
+    [api, namespace, name, pod, location, tailLines, previous],
   );
   useInterval(state.retry, follow && !previous && !state.loading ? 5_000 : null);
 
@@ -61,7 +72,7 @@ export const ClusterLogs = ({
     const url = URL.createObjectURL(new Blob([raw], { type: 'text/plain' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${namespace}-${pod}${previous ? '-previous' : ''}.log`;
+    a.download = `${multiLocation ? `${location}-` : ''}${namespace}-${pod}${previous ? '-previous' : ''}.log`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -72,9 +83,12 @@ export const ClusterLogs = ({
         <Flex gap="3" align="end">
           <Select
             label="Pod"
-            value={pod}
+            value={current ? podKey(current) : null}
             onChange={key => setSelected(String(key))}
-            options={pods.map(p => ({ id: p.name, label: `${p.name} (${p.role})` }))}
+            options={pods.map(p => ({
+              id: podKey(p),
+              label: multiLocation ? `${p.name} (${p.role}, ${p.location})` : `${p.name} (${p.role})`,
+            }))}
           />
           <Switch label="Previous container" isSelected={previous} onChange={setPrevious} />
           <Switch

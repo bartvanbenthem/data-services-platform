@@ -22,6 +22,7 @@ import {
 } from '@kubernetes/client-node';
 import {
   ClusterEvent,
+  clusterLocations,
   InstancePod,
   PodLogs,
   PostgresCluster,
@@ -39,6 +40,9 @@ import {
 } from '@internal/backstage-plugin-cnpg-common';
 
 const FIELD_MANAGER = 'backstage-cnpg';
+
+/** Credentials for a location's Kubernetes API; LocationService.kubeConfig in the plugin. */
+export type LocationKubeConfig = (location: string) => Promise<KubeConfig>;
 
 /**
  * Talks to the Kubernetes API of the platform cluster that runs Crossplane +
@@ -112,27 +116,57 @@ export class CnpgKubernetesService {
     )) as PostgresCluster;
   }
 
-  async details(namespace: string, name: string): Promise<PostgresClusterDetails> {
+  /**
+   * The cluster with its pods and events from every location it runs in,
+   * and the live CNPG status from the primary's. A location that can't be
+   * reached is listed in `unreachable` instead of failing the whole page.
+   */
+  async details(
+    namespace: string,
+    name: string,
+    kubeConfigFor?: LocationKubeConfig,
+  ): Promise<PostgresClusterDetails> {
     const resource = await this.get(namespace, name);
-    const [pods, events, cnpg] = await Promise.all([
-      this.#pods(namespace, name),
-      this.#events(namespace, name),
-      this.#custom
-        .getNamespacedCustomObject({
-          group: 'postgresql.cnpg.io',
-          version: 'v1',
-          plural: 'clusters',
-          namespace,
-          name,
-        })
-        .catch(() => undefined),
-    ]);
+    const summary = summarize(resource);
+    const unreachable: NonNullable<PostgresClusterDetails['unreachable']> = [];
+    const perLocation = await Promise.all(
+      clusterLocations(resource).map(async location => {
+        try {
+          const kc = await this.#kubeConfig(location, kubeConfigFor);
+          const core = kc.makeApiClient(CoreV1Api);
+          const custom = kc.makeApiClient(CustomObjectsApi);
+          const [pods, events, cnpg] = await Promise.all([
+            this.#pods(core, location, namespace, name),
+            this.#events(core, location, namespace, name),
+            location === summary.primaryLocation
+              ? custom
+                  .getNamespacedCustomObject({
+                    group: 'postgresql.cnpg.io',
+                    version: 'v1',
+                    plural: 'clusters',
+                    namespace,
+                    name,
+                  })
+                  .catch(() => undefined)
+              : undefined,
+          ]);
+          return { pods, events, cnpgStatus: cnpg?.status };
+        } catch (e) {
+          unreachable.push({ location, message: (e as Error).message });
+          return { pods: [], events: [], cnpgStatus: undefined };
+        }
+      }),
+    );
     return {
-      summary: summarize(resource),
+      summary,
       resource,
-      pods,
-      events,
-      cnpgStatus: cnpg?.status,
+      pods: perLocation.flatMap(l => l.pods),
+      events: perLocation
+        .flatMap(l => l.events)
+        .sort((a, b) => (b.lastSeen ?? '').localeCompare(a.lastSeen ?? ''))
+        .slice(0, 15),
+      cnpgStatus: perLocation.find(l => l.cnpgStatus)?.cnpgStatus,
+      ...(unreachable.length ? { unreachable } : {}),
     };
   }
 
@@ -145,18 +179,33 @@ export class CnpgKubernetesService {
   async logs(
     namespace: string,
     name: string,
-    options: { pod: string; tailLines: number; sinceSeconds?: number; previous?: boolean },
+    options: {
+      pod: string;
+      location?: string;
+      tailLines: number;
+      sinceSeconds?: number;
+      previous?: boolean;
+    },
+    kubeConfigFor?: LocationKubeConfig,
   ): Promise<PodLogs> {
     const { pod, tailLines, sinceSeconds, previous } = options;
-    const what = `Pod ${namespace}/${pod} of cluster ${name}`;
-    const p = await this.#call(() => this.#core.readNamespacedPod({ namespace, name: pod }), what);
+    const cluster = await this.get(namespace, name);
+    const location = options.location ?? summarize(cluster).primaryLocation;
+    // Only the cluster's own locations: the location parameter must not
+    // become a way to read pods in arbitrary clusters.
+    if (!location || !clusterLocations(cluster).includes(location)) {
+      throw new NotFoundError(`Cluster ${namespace}/${name} doesn't run in location ${location || '(none yet)'}`);
+    }
+    const core = (await this.#kubeConfig(location, kubeConfigFor)).makeApiClient(CoreV1Api);
+    const what = `Pod ${namespace}/${pod} of cluster ${name} in ${location}`;
+    const p = await this.#call(() => core.readNamespacedPod({ namespace, name: pod }), what);
     if (p.metadata?.labels?.['cnpg.io/cluster'] !== name) {
       throw new NotFoundError(`${what} not found`);
     }
     const containers = (p.spec?.containers ?? []).map(c => c.name);
     const container = containers.includes('postgres') ? 'postgres' : containers[0];
     const text = await this.#call(() =>
-      this.#core.readNamespacedPodLog({
+      core.readNamespacedPodLog({
         namespace,
         name: pod,
         container,
@@ -167,7 +216,7 @@ export class CnpgKubernetesService {
         limitBytes: 4 * 1024 * 1024,
       }),
     );
-    return { pod, container: container ?? '', text: text ?? '' };
+    return { pod, location, container: container ?? '', text: text ?? '' };
   }
 
   /**
@@ -262,6 +311,30 @@ export class CnpgKubernetesService {
       `PostgresCluster ${namespace}/${name}`,
     );
     this.#logger.info(`Deleted PostgresCluster ${namespace}/${name}`);
+  }
+
+  /**
+   * Deletes a Project, turning its deletionProtection off first (the
+   * admission policy refuses the delete otherwise). Callers check that it
+   * has no PostgresClusters left: its namespace goes with it.
+   */
+  async deleteProject(name: string): Promise<void> {
+    const project = await this.getProject(name);
+    if (project.spec.deletionProtection !== false) {
+      await this.patchProject({ name, spec: { deletionProtection: false } });
+    }
+    await this.#call(
+      () =>
+        this.#custom.deleteClusterCustomObject({
+          group: PROJECT_GROUP,
+          version: PROJECT_VERSION,
+          plural: PROJECT_PLURAL,
+          name,
+          propagationPolicy: 'Foreground',
+        }),
+      `Project ${name}`,
+    );
+    this.#logger.info(`Deleted Project ${name}`);
   }
 
   /**
@@ -373,9 +446,19 @@ export class CnpgKubernetesService {
       .sort();
   }
 
-  async #pods(namespace: string, name: string): Promise<InstancePod[]> {
+  async #kubeConfig(location: string, kubeConfigFor?: LocationKubeConfig): Promise<KubeConfig> {
+    if (!kubeConfigFor) throw new NotFoundError(`Location ${location} not found`);
+    return kubeConfigFor(location);
+  }
+
+  async #pods(
+    core: CoreV1Api,
+    location: string,
+    namespace: string,
+    name: string,
+  ): Promise<InstancePod[]> {
     const res = await this.#call(() =>
-      this.#core.listNamespacedPod({
+      core.listNamespacedPod({
         namespace,
         labelSelector: `cnpg.io/cluster=${name}`,
       }),
@@ -386,6 +469,7 @@ export class CnpgKubernetesService {
       .filter(p => !(label(p, 'cnpg.io/jobRole') && p.status?.phase === 'Succeeded'))
       .map(p => ({
         name: p.metadata?.name ?? '',
+        location,
         role:
           label(p, 'cnpg.io/instanceRole') ??
           (label(p, 'cnpg.io/jobRole') ? `job: ${label(p, 'cnpg.io/jobRole')}` : undefined) ??
@@ -405,14 +489,20 @@ export class CnpgKubernetesService {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async #events(namespace: string, name: string): Promise<ClusterEvent[]> {
-    const res = await this.#call(() => this.#core.listNamespacedEvent({ namespace }));
+  async #events(
+    core: CoreV1Api,
+    location: string,
+    namespace: string,
+    name: string,
+  ): Promise<ClusterEvent[]> {
+    const res = await this.#call(() => core.listNamespacedEvent({ namespace }));
     // The XR, the Cluster, poolers, backups, pods and PVCs are all named
     // "<name>" or "<name>-...".
     const belongs = (obj = '') => obj === name || obj.startsWith(`${name}-`);
     return res.items
       .filter(e => belongs(e.involvedObject?.name))
       .map(e => ({
+        location,
         type: e.type ?? 'Normal',
         reason: e.reason ?? '',
         message: e.message ?? '',

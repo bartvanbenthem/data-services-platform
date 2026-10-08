@@ -29,6 +29,7 @@ export const EditProjectPage = () => {
   });
 
   const { value: project, error: loadError } = useAsync(() => api.getProject(name), [api, name]);
+  const { value: locations } = useAsync(() => api.listLocations().catch(() => []), [api]);
   const original = useMemo(() => project && fromProject(project.resource), [project]);
   const access = project?.resource.spec.access;
   const keepAccess = !accessEditable(access);
@@ -103,6 +104,7 @@ export const EditProjectPage = () => {
                   err={err}
                   original={original}
                   lockedAccess={keepAccess ? access : undefined}
+                  locations={locations}
                 />
               </Flex>
             </Grid.Item>

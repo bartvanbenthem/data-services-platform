@@ -4,12 +4,19 @@
  * defaults, and the API server validates the result against the XRD.
  */
 
-import type { PostgresCluster } from '@internal/backstage-plugin-cnpg-common';
+import type { PostgresCluster, Site } from '@internal/backstage-plugin-cnpg-common';
 
 export interface ClusterForm {
   name: string;
   namespace: string;
   owner: string;
+  /** A replica cluster in the project's recovery location. */
+  geoReplication: boolean;
+  /** Its instances; 0 means as many as the cluster's. */
+  geoInstances: number;
+  /** Where the primary runs; changing it on an existing cluster switches over. */
+  primarySite: Site;
+  promotion: 'Switchover' | 'Failover';
   postgresVersion: number;
   instances: number;
   storageSize: string;
@@ -29,6 +36,8 @@ export interface ClusterForm {
   poolMode: 'transaction' | 'session';
   poolerReadOnly: boolean;
   backupEnabled: boolean;
+  /** Archive to the Project's COSI bucket instead of a destination of its own. */
+  backupProjectBucket: boolean;
   backupDestinationPath: string;
   backupEndpointURL: string;
   backupSecretName: string;
@@ -42,6 +51,10 @@ export const defaultForm = (namespace = ''): ClusterForm => ({
   name: '',
   namespace,
   owner: '',
+  geoReplication: false,
+  geoInstances: 0,
+  primarySite: 'protected',
+  promotion: 'Switchover',
   postgresVersion: 17,
   instances: 3,
   storageSize: '10Gi',
@@ -61,6 +74,7 @@ export const defaultForm = (namespace = ''): ClusterForm => ({
   poolMode: 'transaction',
   poolerReadOnly: false,
   backupEnabled: false,
+  backupProjectBucket: false,
   backupDestinationPath: '',
   backupEndpointURL: '',
   backupSecretName: '',
@@ -85,9 +99,20 @@ export function validate(f: ClusterForm): Partial<Record<keyof ClusterForm, stri
   if (!PG_IDENT.test(f.databaseName)) e.databaseName = 'A PostgreSQL identifier, e.g. orders.';
   if (!PG_IDENT.test(f.databaseOwner)) e.databaseOwner = 'A PostgreSQL identifier, e.g. orders.';
   if (f.synchronousReplicas >= f.instances) e.synchronousReplicas = 'Must be lower than the number of instances.';
-  if (f.backupEnabled) {
+  if (f.geoReplication && !f.backupEnabled) {
+    e.geoReplication = 'The replica cluster is fed from the backup object store: enable backups.';
+  }
+  if (f.geoReplication && f.geoInstances > 0 && f.synchronousReplicas >= f.geoInstances) {
+    e.geoInstances = 'Must be higher than the synchronous replicas.';
+  }
+  if (f.primarySite === 'recovery' && !f.geoReplication) {
+    e.primarySite = 'The primary can only be in the recovery site while geo replication is on.';
+  }
+  if (f.backupEnabled && !f.backupProjectBucket) {
     if (!/^s3:\/\/.+/.test(f.backupDestinationPath)) e.backupDestinationPath = 'e.g. s3://my-bucket/postgres';
     if (!f.backupSecretName) e.backupSecretName = 'Secret with ACCESS_KEY_ID / ACCESS_SECRET_KEY.';
+  }
+  if (f.backupEnabled) {
     if (!/^[1-9][0-9]*[dwm]$/.test(f.backupRetention)) e.backupRetention = 'e.g. 30d, 4w';
     if (f.backupSchedule.trim().split(/\s+/).length !== 6) e.backupSchedule = 'Six fields, seconds first: "0 0 2 * * *"';
   }
@@ -130,16 +155,27 @@ export function toSpec(f: ClusterForm, { explicit = false } = {}): Record<string
     poolMode: f.poolMode,
     readOnly: f.poolerReadOnly,
   };
+  // Without destination and credentials the cluster uses the Project's bucket.
+  const ownStore = !f.backupProjectBucket;
   const backup = {
     enabled: f.backupEnabled,
-    ...(f.backupDestinationPath ? { destinationPath: f.backupDestinationPath } : {}),
-    ...(f.backupEndpointURL ? { endpointURL: f.backupEndpointURL } : {}),
-    ...(f.backupSecretName ? { s3Credentials: { secretName: f.backupSecretName } } : {}),
+    ...(ownStore && f.backupDestinationPath ? { destinationPath: f.backupDestinationPath } : {}),
+    ...(ownStore && f.backupEndpointURL ? { endpointURL: f.backupEndpointURL } : {}),
+    ...(ownStore && f.backupSecretName ? { s3Credentials: { secretName: f.backupSecretName } } : {}),
     retentionPolicy: f.backupRetention,
     schedule: f.backupSchedule,
   };
   if (f.poolerEnabled || explicit) spec.pooler = pooler;
   if (f.backupEnabled || explicit) spec.backup = backup;
+  if (f.geoReplication || explicit) {
+    spec.geoReplication = {
+      enabled: f.geoReplication,
+      ...(f.geoInstances > 0 ? { instances: f.geoInstances } : {}),
+      // Back to protected is set explicitly, so the patch says so.
+      ...(f.primarySite !== 'protected' || explicit ? { primarySite: f.primarySite } : {}),
+      ...(f.promotion !== 'Switchover' || explicit ? { promotion: f.promotion } : {}),
+    };
+  }
   return spec;
 }
 
@@ -169,10 +205,15 @@ export function fromCluster(cluster: PostgresCluster): ClusterForm {
   const pooler = spec.pooler ?? {};
   const backup = spec.backup ?? {};
   const monitoring = spec.monitoring ?? {};
+  const geo = spec.geoReplication ?? {};
   return {
     ...d,
     name: metadata.name,
     owner: metadata.labels?.['backstage.io/owner'] ?? '',
+    geoReplication: Boolean(geo.enabled),
+    geoInstances: geo.instances ?? 0,
+    primarySite: geo.primarySite ?? d.primarySite,
+    promotion: geo.promotion ?? d.promotion,
     postgresVersion: spec.postgresVersion ?? d.postgresVersion,
     instances: spec.instances ?? d.instances,
     storageSize: spec.storage?.size ?? d.storageSize,
@@ -192,6 +233,7 @@ export function fromCluster(cluster: PostgresCluster): ClusterForm {
     poolMode: pooler.poolMode ?? d.poolMode,
     poolerReadOnly: pooler.readOnly ?? d.poolerReadOnly,
     backupEnabled: Boolean(backup.enabled),
+    backupProjectBucket: Boolean(backup.enabled) && !backup.destinationPath,
     backupDestinationPath: backup.destinationPath ?? '',
     backupEndpointURL: backup.endpointURL ?? '',
     backupSecretName: backup.s3Credentials?.secretName ?? '',

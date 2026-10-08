@@ -1,8 +1,9 @@
 # Smallest useful PostgresCluster: 3 instances of PostgreSQL 17 with
-# metrics, alerts and a Grafana dashboard (all defaults). Connect with the
+# metrics, alerts and a Grafana dashboard (all defaults), in the demo
+# Project's protected location. Connect, in that cluster, with the
 # credentials in Secret demo/orders-db-app at orders-db-rw.demo.svc:5432,
-# or from outside the cluster via the public IP of Service
-# demo/orders-db-external (STACKIT Network Load Balancer).
+# or from outside it via the public IP of Service demo/orders-db-external
+# (STACKIT Network Load Balancer).
 apiVersion: cnpg.cncp.nl/v1alpha1
 kind: PostgresCluster
 metadata:

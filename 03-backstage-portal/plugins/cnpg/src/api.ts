@@ -44,6 +44,8 @@ export interface CreateProjectRequest {
 
 export interface PodLogsRequest {
   pod: string;
+  /** Location the pod runs in (default: local). */
+  location?: string;
   tailLines?: number;
   /** The last terminated container instead of the running one. */
   previous?: boolean;
@@ -91,6 +93,8 @@ export interface CnpgApi {
   getProject(name: string): Promise<{ summary: ProjectSummary; resource: Project }>;
   createProject(request: CreateProjectRequest): Promise<Project>;
   patchProject(name: string, request: PatchRequest): Promise<Project>;
+  /** Refused (409) while the project still has PostgreSQL clusters. */
+  deleteProject(name: string): Promise<void>;
   listLocations(): Promise<LocationSummary[]>;
   getLocation(name: string): Promise<LocationSummary>;
   /** Probes the location again instead of returning the cached health. */
@@ -156,6 +160,7 @@ export class CnpgClient implements CnpgApi {
 
   getPodLogs(namespace: string, name: string, request: PodLogsRequest) {
     const query = new URLSearchParams({ pod: request.pod });
+    if (request.location) query.set('location', request.location);
     if (request.tailLines) query.set('tailLines', String(request.tailLines));
     if (request.previous) query.set('previous', 'true');
     return this.#request<PodLogs>(`/clusters/${enc(namespace)}/${enc(name)}/logs?${query}`);
@@ -181,6 +186,10 @@ export class CnpgClient implements CnpgApi {
       method: 'PATCH',
       body: JSON.stringify(request),
     });
+  }
+
+  async deleteProject(name: string) {
+    await this.#request(`/projects/${enc(name)}`, { method: 'DELETE' });
   }
 
   async listLocations() {

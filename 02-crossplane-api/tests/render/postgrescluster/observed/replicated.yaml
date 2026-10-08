@@ -1,0 +1,283 @@
+# Observed state for xr/replicated.yaml: every composed object exists and each
+# CNPG Cluster is healthy. Objects report the live object
+# in status.atProvider.manifest. Generated from an empty render.
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-cluster
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: cluster
+status:
+  atProvider:
+    manifest:
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      metadata:
+        name: orders-db
+        namespace: payments
+      spec:
+        replica:
+          primary: orders-db
+          self: orders-db
+          source: orders-db-onprem-ams
+      status:
+        phase: Cluster in healthy state
+        readyInstances: 3
+        instances: 3
+        currentPrimary: orders-db-1
+        conditions:
+        - type: Ready
+          status: 'True'
+          reason: ClusterIsReady
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: orders-db-cnpg
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: dashboard
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-objectstore
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: objectstore
+status:
+  atProvider:
+    manifest:
+      apiVersion: barmancloud.cnpg.io/v1
+      kind: ObjectStore
+      metadata:
+        name: orders-db-backup
+        namespace: payments
+      status:
+        serverRecoveryWindow:
+          orders-db:
+            firstRecoverabilityPoint: '2026-10-01T02:00:12Z'
+            lastSuccessfulBackupTime: '2026-10-07T02:00:41Z'
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-podmonitor
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: podmonitor
+status:
+  atProvider:
+    manifest:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PodMonitor
+      metadata:
+        name: orders-db
+        namespace: payments
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-prometheusrule
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: prometheusrule
+status:
+  atProvider:
+    manifest:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: orders-db-alerts
+        namespace: payments
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-cluster
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: recovery-cluster
+status:
+  atProvider:
+    manifest:
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      metadata:
+        name: orders-db
+        namespace: payments
+      spec:
+        replica:
+          primary: orders-db
+          self: orders-db-onprem-ams
+          source: orders-db
+      status:
+        phase: Cluster in healthy state
+        readyInstances: 2
+        instances: 2
+        currentPrimary: orders-db-1
+        conditions:
+        - type: Ready
+          status: 'True'
+          reason: ClusterIsReady
+  conditions:
+  - type: Ready
+    status: 'True'
+    reason: Available
+  - type: Synced
+    status: 'True'
+    reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-objectstore
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: recovery-objectstore
+status:
+  atProvider:
+    manifest:
+      apiVersion: barmancloud.cnpg.io/v1
+      kind: ObjectStore
+      metadata:
+        name: orders-db-backup
+        namespace: payments
+      status:
+        serverRecoveryWindow:
+          orders-db:
+            firstRecoverabilityPoint: '2026-10-01T02:00:12Z'
+            lastSuccessfulBackupTime: '2026-10-07T02:00:41Z'
+  conditions:
+  - type: Ready
+    status: 'True'
+    reason: Available
+  - type: Synced
+    status: 'True'
+    reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-podmonitor
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: recovery-podmonitor
+status:
+  atProvider:
+    manifest:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PodMonitor
+      metadata:
+        name: orders-db
+        namespace: payments
+  conditions:
+  - type: Ready
+    status: 'True'
+    reason: Available
+  - type: Synced
+    status: 'True'
+    reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-prometheusrule
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: recovery-prometheusrule
+status:
+  atProvider:
+    manifest:
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: orders-db-alerts
+        namespace: payments
+  conditions:
+  - type: Ready
+    status: 'True'
+    reason: Available
+  - type: Synced
+    status: 'True'
+    reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-scheduled-backup
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: recovery-scheduled-backup
+status:
+  atProvider:
+    manifest:
+      apiVersion: postgresql.cnpg.io/v1
+      kind: ScheduledBackup
+      metadata:
+        name: orders-db-scheduled
+        namespace: payments
+  conditions:
+  - type: Ready
+    status: 'True'
+    reason: Available
+  - type: Synced
+    status: 'True'
+    reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-recovery-secret-orders-db-s3
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: recovery-secret-orders-db-s3
+status:
+  atProvider:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: orders-db-s3
+        namespace: payments
+  conditions:
+  - type: Ready
+    status: 'True'
+    reason: Available
+  - type: Synced
+    status: 'True'
+    reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-scheduled-backup
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: scheduled-backup
+status:
+  atProvider:
+    manifest:
+      apiVersion: postgresql.cnpg.io/v1
+      kind: ScheduledBackup
+      metadata:
+        name: orders-db-scheduled
+        namespace: payments
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: orders-db-secret-orders-db-s3
+  namespace: payments
+  annotations:
+    crossplane.io/composition-resource-name: secret-orders-db-s3
+status:
+  atProvider:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: orders-db-s3
+        namespace: payments
+      type: Opaque

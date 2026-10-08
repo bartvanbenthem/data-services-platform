@@ -1,0 +1,9 @@
+# A project whose protected location nobody registered (no Location object).
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: team-orphan
+spec:
+  owner: team-orphan
+  locations:
+    protected: nowhere

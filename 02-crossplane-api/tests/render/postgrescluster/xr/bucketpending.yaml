@@ -1,0 +1,9 @@
+# Backups in the Project's bucket, which isn't ready: nothing is placed yet.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: secrets-db
+  namespace: vault
+spec:
+  backup:
+    enabled: true

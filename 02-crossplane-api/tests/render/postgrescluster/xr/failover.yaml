@@ -1,0 +1,22 @@
+# The protected location is gone: promotion Failover promotes the recovery
+# site right away, without waiting for a demotion token.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db
+  namespace: payments
+spec:
+  geoReplication:
+    enabled: true
+    primarySite: recovery
+    promotion: Failover
+  backup:
+    enabled: true
+    destinationPath: s3://pg-backups/payments
+    s3Credentials:
+      secretName: orders-db-s3
+status:
+  sites:
+    protected: si-ske-demo
+    recovery: onprem-ams
+  primaryLocation: si-ske-demo

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Removes the PostgresCluster and Project APIs. Refuses while PostgresClusters
-# or Projects exist, because deleting an XRD cascade-deletes every object of
-# that kind (and a Project takes its namespace with it).
+# Removes the PostgresCluster, Project and Location APIs from the control
+# plane. Refuses while PostgresClusters or Projects exist, because deleting an
+# XRD cascade-deletes every object of that kind (and with it the databases in
+# the locations). Locations go with their XRD: their ClusterProviderConfigs
+# too, but not their kubeconfig Secrets or what the platform installed in
+# those clusters.
 # Crossplane core stays installed unless UNINSTALL_CROSSPLANE=true.
 set -euo pipefail
 
@@ -27,14 +30,24 @@ if kubectl get crd projects.platform.cncp.nl >/dev/null 2>&1; then
   fi
 fi
 
-kubectl delete -f "${API_DIR}/project/require-project-policy.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/project/policies.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/project/composition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/project/definition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/postgrescluster/composition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/postgrescluster/definition.yaml" --ignore-not-found
+if kubectl get crd locations.platform.cncp.nl >/dev/null 2>&1; then
+  kubectl delete locations.platform.cncp.nl --all --wait=true
+fi
+kubectl delete -f "${API_DIR}/location/composition.yaml" --ignore-not-found
+kubectl delete -f "${API_DIR}/location/definition.yaml" --ignore-not-found
 kubectl delete -f "${SCRIPT_DIR}/functions.yaml" --ignore-not-found
+# Location kubeconfig Secrets stay (the portal's, or add-location.sh's).
+# Leftovers of locations registered before the Location API:
+kubectl delete clusterproviderconfigs.kubernetes.m.crossplane.io --all --ignore-not-found 2>/dev/null || true
+kubectl delete -f "${SCRIPT_DIR}/provider-kubernetes.yaml" --ignore-not-found
 kubectl delete -f "${SCRIPT_DIR}/rbac.yaml" --ignore-not-found
+# Installed on the control plane by older versions:
+kubectl delete -f "${SCRIPT_DIR}/project-prometheus-role.yaml" --ignore-not-found
 
 if [[ "${UNINSTALL_CROSSPLANE:-false}" == "true" ]]; then
   helm uninstall crossplane -n "${CROSSPLANE_NAMESPACE}"

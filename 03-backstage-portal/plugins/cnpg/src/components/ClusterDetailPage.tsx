@@ -173,6 +173,7 @@ export const ClusterDetailPage = ({ tab }: { tab: 'overview' | 'monitoring' | 'l
             name={name}
             pods={value.pods}
             currentPrimary={value.summary.currentPrimary}
+            primaryLocation={value.summary.primaryLocation}
           />
         )}
       </Container>

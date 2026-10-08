@@ -28,3 +28,30 @@ data:
     operatorMetrics:
       enabled: true
       namespace: cnpg-system
+    # The databases run in the projects' locations: the Prometheus there
+    # sends its samples to the project's Prometheus on the control plane,
+    # through an Ingress that exposes only /api/v1/write. Without this they
+    # keep their metrics (and still evaluate the alerts), but the project's
+    # Grafana sees none of them. clusterMetrics and operatorMetrics above
+    # describe the locations.
+    # remoteWrite:
+    #   hostTemplate: prometheus-{project}.203.0.113.10.nip.io
+    #   scheme: http                       # https with tlsSecretName
+    #   className: haproxy
+    #   # tlsSecretName: wildcard-tls
+    #   # Restrict who may write, e.g. the locations' egress IPs:
+    #   annotations:
+    #     haproxy-ingress.github.io/allowlist-source-range: 198.51.100.0/24
+  # A COSI backup bucket per Project (Project spec.backup): PostgresClusters
+  # with backups but no destinationPath of their own archive there, both
+  # sites of a geo-replicated cluster with credentials of their own. Each
+  # Project gets its own BucketClass (deletionPolicy: Retain, so deleting a
+  # Project keeps its backups) for this driver, and in its namespace the
+  # BucketClaim, a BucketAccess per location and the credentials. The access
+  # class's driver must hand out S3 keys, and the bucket's endpoint must be
+  # reachable from every location.
+  # backup:
+  #   cosi:
+  #     driverName: cloudian-cosi-driver
+  #     parameters: {}                     # driver-specific BucketClass parameters
+  #     bucketAccessClassName: backups-keys

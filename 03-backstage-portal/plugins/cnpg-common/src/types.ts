@@ -22,12 +22,34 @@ export const PROJECT_KIND = 'Project';
 /** Annotation on catalog project entities: the Project (= namespace) name. */
 export const PROJECT_ANNOTATION = 'platform.cncp.nl/project';
 
+/**
+ * Reserved location name. It used to stand for the platform cluster itself;
+ * the control plane now runs no databases, so no Location may take it.
+ */
+export const LOCAL_LOCATION = 'local';
+
+/** The two roles a location plays in a Project. */
+export type Site = 'protected' | 'recovery';
+
 export interface Condition {
   type: string;
   status: 'True' | 'False' | 'Unknown';
   reason?: string;
   message?: string;
   lastTransitionTime?: string;
+}
+
+/** One location a PostgresCluster runs in (status.locations[]). */
+export interface ClusterLocationStatus {
+  location: string;
+  site?: Site;
+  /** primary, replica, or promoting (waiting for the old primary's demotion token). */
+  role: 'primary' | 'replica' | 'promoting' | string;
+  ready?: boolean;
+  phase?: string;
+  instances?: number;
+  readyInstances?: number;
+  currentPrimary?: string;
 }
 
 export interface PostgresClusterStatus {
@@ -42,6 +64,13 @@ export interface PostgresClusterStatus {
   secrets?: { app?: string; superuser?: string };
   backup?: { lastSuccessfulBackup?: string; firstRecoverabilityPoint?: string };
   monitoring?: { dashboardUid?: string };
+  /** The Project's backup bucket the cluster archives to (no destinationPath of its own), pinned on first use. */
+  backupStore?: { destinationPath?: string; endpointURL?: string; namespace?: string; region?: boolean };
+  /** The Project's locations the cluster was placed in, pinned on first use. */
+  sites?: { protected?: string; recovery?: string };
+  primaryLocation?: string;
+  primarySite?: Site;
+  locations?: ClusterLocationStatus[];
   conditions?: Condition[];
 }
 
@@ -80,6 +109,15 @@ export interface PostgresClusterSummary {
   backup: boolean;
   /** uid of the composed GrafanaDashboard; unset when the dashboard is disabled. */
   dashboardUid?: string;
+  /** The protected location, where the cluster was created; empty until known. */
+  location: string;
+  /** Whether a replica cluster runs in the recovery location (spec.geoReplication.enabled). */
+  geoReplication: boolean;
+  /** The recovery location, when the cluster has (or still has) a replica cluster there. */
+  recoveryLocation?: string;
+  /** Where the primary runs now. */
+  primaryLocation: string;
+  primarySite: Site;
   createdAt?: string;
   /** The Project whose namespace the cluster lives in, if any (filled in by the backend). */
   project?: string;
@@ -89,6 +127,8 @@ export interface PostgresClusterSummary {
 
 export interface InstancePod {
   name: string;
+  /** Location (Kubernetes cluster) the pod runs in. */
+  location: string;
   role: string;
   phase: string;
   ready: boolean;
@@ -98,6 +138,7 @@ export interface InstancePod {
 }
 
 export interface ClusterEvent {
+  location: string;
   type: string;
   reason: string;
   message: string;
@@ -109,6 +150,7 @@ export interface ClusterEvent {
 /** The tail of one cluster pod's stdout, as the Logs tab shows it. */
 export interface PodLogs {
   pod: string;
+  location: string;
   container: string;
   /** Raw log text; CNPG writes one JSON object per line. */
   text: string;
@@ -120,8 +162,10 @@ export interface PostgresClusterDetails {
   resource: PostgresCluster;
   pods: InstancePod[];
   events: ClusterEvent[];
-  /** Live CNPG Cluster status (instance roles, timeline, certificates...). */
+  /** Live CNPG Cluster status of the primary's location (instance roles, timeline...). */
   cnpgStatus?: Record<string, any>;
+  /** Locations whose pods/events couldn't be read, with the reason. */
+  unreachable?: Array<{ location: string; message: string }>;
 }
 
 export function conditionStatus(
@@ -131,7 +175,8 @@ export function conditionStatus(
   return cluster.status?.conditions?.find(c => c.type === type);
 }
 
-export function summarize(cluster: PostgresCluster): PostgresClusterSummary {
+/** `project` (the cluster's, if known) fills in its sites until the composition reports them. */
+export function summarize(cluster: PostgresCluster, project?: Project): PostgresClusterSummary {
   const { metadata, spec, status } = cluster;
   return {
     name: metadata.name,
@@ -149,15 +194,61 @@ export function summarize(cluster: PostgresCluster): PostgresClusterSummary {
     pooler: Boolean(spec.pooler?.enabled),
     backup: Boolean(spec.backup?.enabled),
     dashboardUid: status?.monitoring?.dashboardUid || undefined,
+    ...clusterSites(cluster, project),
     createdAt: metadata.creationTimestamp,
   };
+}
+
+/**
+ * Where a cluster runs, from its status (the composition pins its sites
+ * there); `project`'s locations stand in until the first reconcile.
+ */
+export function clusterSites(
+  cluster: PostgresCluster,
+  project?: Project,
+): Pick<PostgresClusterSummary, 'location' | 'geoReplication' | 'recoveryLocation' | 'primaryLocation' | 'primarySite'> {
+  const { spec, status } = cluster;
+  const location = status?.sites?.protected || project?.spec.locations?.protected || '';
+  const geoReplication = Boolean(spec.geoReplication?.enabled);
+  const recovery = status?.sites?.recovery || project?.spec.locations?.recovery;
+  const inRecovery = (status?.locations ?? []).some(l => l.site === 'recovery');
+  const primarySite: Site = status?.primarySite ?? 'protected';
+  return {
+    location,
+    geoReplication,
+    recoveryLocation: recovery && (geoReplication || inRecovery) ? recovery : undefined,
+    primaryLocation:
+      status?.primaryLocation || (primarySite === 'recovery' && recovery ? recovery : location),
+    primarySite,
+  };
+}
+
+/** Every location a cluster runs in: the protected site first, then the recovery site. */
+export function clusterLocations(cluster: PostgresCluster): string[] {
+  const reported = (cluster.status?.locations ?? []).map(l => l.location).filter(Boolean);
+  if (reported.length) return reported;
+  const { location, recoveryLocation } = clusterSites(cluster);
+  return [location, recoveryLocation].filter((l): l is string => Boolean(l));
 }
 
 export interface ProjectStatus {
   ready?: boolean;
   message?: string;
   namespace?: string;
-  prometheus?: { url?: string };
+  locations?: Array<{ location: string; site?: Site; ready?: boolean; message?: string }>;
+  prometheus?: { url?: string; remoteWriteUrl?: string };
+  /** The COSI backup bucket (Project spec.backup); unset without one. */
+  backup?: {
+    ready?: boolean;
+    bucket?: string;
+    endpoint?: string;
+    region?: string;
+    destinationPath?: string;
+    /** Control-plane namespace with the COSI objects and credentials (the project's). */
+    namespace?: string;
+    /** Per location, the Secret with its S3 keys. */
+    credentials?: Record<string, string>;
+  };
   grafana?: {
     url?: string;
     internalUrl?: string;
@@ -182,12 +273,19 @@ export interface Project {
     owner?: string;
     description?: string;
     deletionProtection?: boolean;
+    /**
+     * Where its databases run (protected) and where PostgresClusters with
+     * geoReplication keep a replica cluster (recovery). Neither can change
+     * once set; recovery can be added later.
+     */
+    locations?: { protected?: string; recovery?: string };
     access?: Array<{ group: string; role: 'admin' | 'edit' | 'view' }>;
     quota?: { cpu?: string; memory?: string; storage?: string };
     observability?: {
       prometheus?: { enabled?: boolean; retention?: string; storage?: { size?: string } };
       grafana?: { enabled?: boolean; ingress?: boolean };
     };
+    backup?: { bucket?: boolean; bucketClassName?: string; bucketAccessClassName?: string };
     [key: string]: unknown;
   };
   status?: ProjectStatus;
@@ -208,6 +306,14 @@ export interface ProjectSummary {
   prometheus: boolean;
   grafana: boolean;
   grafanaUrl?: string;
+  /** Where its databases run. */
+  protectedLocation?: string;
+  /** Where replica clusters run, if the project has a recovery site. */
+  recoveryLocation?: string;
+  /** Both, protected first. */
+  locations: string[];
+  /** Its COSI backup bucket, which PostgresClusters without a backup destination of their own use. */
+  backupBucket?: { ready: boolean; bucket?: string };
   createdAt?: string;
 }
 
@@ -226,6 +332,18 @@ export function summarizeProject(project: Project): ProjectSummary {
     prometheus: spec.observability?.prometheus?.enabled !== false,
     grafana: spec.observability?.grafana?.enabled !== false,
     grafanaUrl: status?.grafana?.url || undefined,
+    protectedLocation: spec.locations?.protected || undefined,
+    recoveryLocation: spec.locations?.recovery || undefined,
+    locations: projectLocations(project),
+    backupBucket: status?.backup
+      ? { ready: Boolean(status.backup.ready), bucket: status.backup.bucket || undefined }
+      : undefined,
     createdAt: metadata.creationTimestamp,
   };
+}
+
+/** A project's locations: the protected one first, then the recovery one. */
+export function projectLocations(project: Project): string[] {
+  const { protected: protectedLocation, recovery } = project.spec.locations ?? {};
+  return [protectedLocation, recovery].filter((l): l is string => Boolean(l));
 }

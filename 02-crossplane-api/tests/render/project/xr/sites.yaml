@@ -1,0 +1,16 @@
+# Both sites, with remote write to the control plane, and a protected
+# location that has since been closed to new databases.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Project
+metadata:
+  name: team-ledger
+spec:
+  owner: team-ledger
+  locations:
+    protected: si-ske-demo
+    recovery: onprem-ams
+  access:
+    - group: ledger-devs
+      role: edit
+  quota:
+    cpu: "4"

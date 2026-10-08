@@ -62,6 +62,7 @@ describe('PostgresClusterEntityProvider', () => {
       prometheus: true,
       grafana: true,
       grafanaUrl: 'http://grafana-payments.example.com',
+      locations: ['ske'],
     });
     expect(entity.spec?.dependsOn).toEqual(['resource:default/payments']);
     expect(entity.metadata.links).toContainEqual({

@@ -1,4 +1,4 @@
-import { NumberField, Select, Switch, TextField } from '@backstage/ui';
+import { NumberField, Select, Switch, Text, TextField } from '@backstage/ui';
 import type { ProjectSummary } from '@internal/backstage-plugin-cnpg-common';
 import { Section } from './common';
 import { ClusterForm } from './form';
@@ -8,10 +8,21 @@ const opts = (values: Array<string | number>) => values.map(v => ({ id: String(v
 /** Explains a field the edit form shows read-only. */
 const FIXED = 'Fixed after creation.';
 
+/** The project's two sites; a cluster runs in the protected one and, with geo replication, the recovery one. */
+export interface Sites {
+  protected?: string;
+  recovery?: string;
+}
+
+/** "protected (dc-ams)": the site and the location behind it. */
+export const siteLabel = (site: keyof Sites, sites?: Sites) =>
+  sites?.[site] ? `${site} (${sites[site]})` : site;
+
 /**
  * Every section of the cluster form, shared by the create and edit pages.
  * With `original` (edit mode) the fields that would need a new cluster are
- * read-only, and volumes say they can only grow.
+ * read-only, and volumes say they can only grow. `sites` are the project's
+ * locations (in create mode they come from the selected project).
  */
 export const ClusterFormFields = ({
   form,
@@ -21,6 +32,8 @@ export const ClusterFormFields = ({
   projects,
   onSelectProject,
   original,
+  sites: sitesProp,
+  backupBucket: backupBucketProp,
 }: {
   form: ClusterForm;
   setForm: (update: (f: ClusterForm) => ClusterForm) => void;
@@ -29,10 +42,31 @@ export const ClusterFormFields = ({
   projects?: ProjectSummary[];
   onSelectProject?: (name: string) => void;
   original?: ClusterForm;
+  sites?: Sites;
+  /** The project's COSI backup bucket, if it has one (in create mode from the selected project). */
+  backupBucket?: ProjectSummary['backupBucket'];
 }) => {
   const editing = Boolean(original);
   const set = <K extends keyof ClusterForm>(key: K) => (value: ClusterForm[K]) =>
     setForm(f => ({ ...f, [key]: value }));
+
+  const project = projects?.find(p => p.name === form.namespace);
+  const sites: Sites | undefined =
+    sitesProp ?? (project && { protected: project.protectedLocation, recovery: project.recoveryLocation });
+  const bucket = backupBucketProp ?? project?.backupBucket;
+  // Moving a running cluster's WAL archive would cut off its replica cluster.
+  const storeFixed = editing && original!.backupEnabled;
+  const switching = editing && form.primarySite !== original!.primarySite;
+  // Geo replication off while the primary is in the recovery site: the
+  // composition switches it back first, then removes the replica cluster.
+  const draining = editing && original!.geoReplication && !form.geoReplication;
+  let geoHelp = 'The project has no recovery location; add one to the project first.';
+  if (sites?.recovery) {
+    geoHelp =
+      draining && original!.primarySite === 'recovery'
+        ? `Switches the primary back to ${sites.protected} first, then removes the replica cluster.`
+        : 'Needs backups: the replica cluster replays the WAL archive, so the sites need no network path to each other.';
+  }
 
   let storageClassField;
   if (editing) {
@@ -138,6 +172,75 @@ export const ClusterFormFields = ({
           }
           isInvalid={Boolean(err('databaseName'))}
         />
+      </Section>
+
+      <Section
+        title="Sites"
+        description="The control plane runs no databases: the cluster runs in its project's protected location. With geo replication a replica cluster in the recovery location follows it through the backup object store, ready to take over."
+      >
+        <TextField
+          label="Protected location"
+          isDisabled
+          value={sites?.protected ?? (form.namespace ? 'none: the project has no protected location' : 'pick a project')}
+          description="Where the database runs: the project's protected location."
+        />
+        <Switch
+          label={sites?.recovery ? `Geo replication to ${sites.recovery}` : 'Geo replication'}
+          isSelected={form.geoReplication}
+          isDisabled={!sites?.recovery && !form.geoReplication}
+          onChange={on =>
+            setForm(f => ({ ...f, geoReplication: on, ...(on ? {} : { primarySite: 'protected' as const }) }))
+          }
+        />
+        <Text variant="body-small" color={err('geoReplication') ? 'danger' : 'secondary'}>
+          {err('geoReplication') ?? geoHelp}
+        </Text>
+        {form.geoReplication && (
+          <NumberField
+            label="Replica cluster instances"
+            minValue={0}
+            maxValue={9}
+            value={form.geoInstances}
+            onChange={set('geoInstances')}
+            description={err('geoInstances') ?? '0: as many as the cluster has.'}
+            isInvalid={Boolean(err('geoInstances'))}
+          />
+        )}
+        {editing && (form.geoReplication || original!.geoReplication) && (
+          <Select
+            label="Primary site"
+            value={form.primarySite}
+            onChange={k => set('primarySite')(k as ClusterForm['primarySite'])}
+            options={(['protected', 'recovery'] as const).map(site => ({
+              id: site,
+              label: siteLabel(site, sites),
+              disabled: site === 'recovery' && !form.geoReplication,
+            }))}
+            description={
+              err('primarySite') ??
+              (switching
+                ? `Saving moves the primary from the ${original!.primarySite} site to the ${form.primarySite} site.`
+                : 'Pick the other site to switch the primary over to it.')
+            }
+            isInvalid={Boolean(err('primarySite'))}
+          />
+        )}
+        {switching && (
+          <Select
+            label="How"
+            value={form.promotion}
+            onChange={k => set('promotion')(k as ClusterForm['promotion'])}
+            options={[
+              { id: 'Switchover', label: 'Switchover: demote the primary first, lose nothing' },
+              { id: 'Failover', label: 'Failover: promote now, the primary is unreachable' },
+            ]}
+            description={
+              form.promotion === 'Failover'
+                ? "Transactions the old primary hadn't archived yet are lost."
+                : 'Waits until the old primary has handed over; takes a minute or two.'
+            }
+          />
+        )}
       </Section>
 
       <Section
@@ -258,32 +361,59 @@ export const ClusterFormFields = ({
         <Switch
           label="Enable backups"
           isSelected={form.backupEnabled}
-          onChange={set('backupEnabled')}
+          onChange={on =>
+            setForm(f => ({
+              ...f,
+              backupEnabled: on,
+              // The project's bucket, unless a destination was typed already.
+              ...(on && bucket && !storeFixed && !f.backupDestinationPath ? { backupProjectBucket: true } : {}),
+            }))
+          }
         />
+        {form.backupEnabled && (bucket || form.backupProjectBucket) && (
+          <Switch
+            label={bucket?.bucket ? `Store in the project's bucket (${bucket.bucket})` : "Store in the project's bucket"}
+            isSelected={form.backupProjectBucket}
+            isDisabled={storeFixed}
+            onChange={set('backupProjectBucket')}
+          />
+        )}
+        {form.backupEnabled && form.backupProjectBucket && (
+          <Text variant="body-small" color={bucket ? 'secondary' : 'warning'}>
+            {storeFixed && "Fixed: moving a running cluster's WAL archive would cut off its replica cluster. "}
+            {bucket
+              ? `COSI provisioned it for the project; each site gets credentials of its own.${bucket.ready ? '' : ' Still provisioning: the cluster waits for it.'}`
+              : 'The project has no backup bucket; turn this off and give a destination of your own.'}
+          </Text>
+        )}
         {form.backupEnabled && (
           <>
-            <TextField
-              label="Destination"
-              placeholder="s3://bucket/path"
-              value={form.backupDestinationPath}
-              onChange={set('backupDestinationPath')}
-              description={err('backupDestinationPath')}
-              isInvalid={Boolean(err('backupDestinationPath'))}
-            />
-            <TextField
-              label="Endpoint URL"
-              placeholder="https://object.storage.example.com"
-              value={form.backupEndpointURL}
-              onChange={set('backupEndpointURL')}
-              description="Leave empty for AWS S3."
-            />
-            <TextField
-              label="Credentials Secret"
-              value={form.backupSecretName}
-              onChange={set('backupSecretName')}
-              description={err('backupSecretName') ?? 'Keys ACCESS_KEY_ID and ACCESS_SECRET_KEY, in the same project.'}
-              isInvalid={Boolean(err('backupSecretName'))}
-            />
+            {!form.backupProjectBucket && (
+              <>
+                <TextField
+                  label="Destination"
+                  placeholder="s3://bucket/path"
+                  value={form.backupDestinationPath}
+                  onChange={set('backupDestinationPath')}
+                  description={err('backupDestinationPath')}
+                  isInvalid={Boolean(err('backupDestinationPath'))}
+                />
+                <TextField
+                  label="Endpoint URL"
+                  placeholder="https://object.storage.example.com"
+                  value={form.backupEndpointURL}
+                  onChange={set('backupEndpointURL')}
+                  description="Leave empty for AWS S3."
+                />
+                <TextField
+                  label="Credentials Secret"
+                  value={form.backupSecretName}
+                  onChange={set('backupSecretName')}
+                  description={err('backupSecretName') ?? 'Keys ACCESS_KEY_ID and ACCESS_SECRET_KEY, in the same project.'}
+                  isInvalid={Boolean(err('backupSecretName'))}
+                />
+              </>
+            )}
             <TextField
               label="Retention"
               value={form.backupRetention}

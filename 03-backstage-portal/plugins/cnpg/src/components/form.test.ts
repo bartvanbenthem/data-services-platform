@@ -150,3 +150,75 @@ describe('mergePatch', () => {
     expect(mergePatch({ a: [1] }, { a: [1] })).toBeUndefined();
   });
 });
+
+describe('locations', () => {
+  const base = {
+    ...defaultForm('demo'),
+    name: 'orders-db',
+    backupEnabled: true,
+    backupDestinationPath: 's3://b/p',
+    backupSecretName: 's3',
+  };
+
+  it('leaves geo replication out until it is switched on', () => {
+    expect(toSpec(base)).not.toHaveProperty('geoReplication');
+    expect(toSpec(base)).not.toHaveProperty('location');
+    expect((toSpec({ ...base, geoReplication: true }) as any).geoReplication).toEqual({ enabled: true });
+    expect((toSpec({ ...base, geoReplication: true, geoInstances: 2 }) as any).geoReplication).toEqual({
+      enabled: true,
+      instances: 2,
+    });
+  });
+
+  it('needs backups for geo replication, and geo replication for a recovery primary', () => {
+    const f = { ...base, geoReplication: true };
+    expect(validate(f)).toEqual({});
+    expect(validate({ ...f, backupEnabled: false }).geoReplication).toMatch(/enable backups/);
+    expect(validate({ ...f, synchronousReplicas: 2, geoInstances: 2 }).geoInstances).toBeDefined();
+    expect(validate({ ...base, primarySite: 'recovery' }).primarySite).toBeDefined();
+  });
+
+  it("archives to the project's bucket without a destination or credentials of its own", () => {
+    const f = { ...base, backupProjectBucket: true, backupDestinationPath: '', backupSecretName: '' };
+    expect(validate(f)).toEqual({});
+    expect((toSpec(f) as any).backup).toEqual({ enabled: true, retentionPolicy: '30d', schedule: '0 0 2 * * *' });
+    // Typed values are ignored once the project's bucket is chosen.
+    expect((toSpec({ ...f, backupDestinationPath: 's3://x/y' }) as any).backup).not.toHaveProperty('destinationPath');
+    // Without it, the destination and credentials are needed.
+    expect(validate({ ...f, backupProjectBucket: false }).backupDestinationPath).toBeDefined();
+    const onBucket: PostgresCluster = {
+      apiVersion: 'cnpg.cncp.nl/v1alpha1',
+      kind: 'PostgresCluster',
+      metadata: { name: 'orders-db', namespace: 'demo' },
+      spec: { instances: 3, backup: { enabled: true, retentionPolicy: '30d', schedule: '0 0 2 * * *' } },
+    };
+    expect(fromCluster(onBucket).backupProjectBucket).toBe(true);
+    expect(fromCluster({ ...onBucket, spec: { backup: { enabled: false } } }).backupProjectBucket).toBe(false);
+    expect(fromCluster({ ...onBucket, spec: { backup: { enabled: true, destinationPath: 's3://b/p' } } }).backupProjectBucket).toBe(false);
+  });
+
+  it('switches the primary over with a patch of just primarySite', () => {
+    const replicated: PostgresCluster = {
+      apiVersion: 'cnpg.cncp.nl/v1alpha1',
+      kind: 'PostgresCluster',
+      metadata: { name: 'orders-db', namespace: 'demo' },
+      spec: {
+        instances: 3,
+        geoReplication: { enabled: true, instances: 2, primarySite: 'protected', promotion: 'Switchover' },
+        backup: { enabled: true, destinationPath: 's3://b/p', s3Credentials: { secretName: 's3' } },
+      },
+    };
+    const original = fromCluster(replicated);
+    expect(original).toMatchObject({ geoReplication: true, geoInstances: 2, primarySite: 'protected' });
+    expect(toEditPatch(original, original)).toEqual({});
+    expect(toEditPatch(original, { ...original, primarySite: 'recovery' })).toEqual({
+      geoReplication: { primarySite: 'recovery' },
+    });
+    expect(toEditPatch(original, { ...original, primarySite: 'recovery', promotion: 'Failover' })).toEqual({
+      geoReplication: { primarySite: 'recovery', promotion: 'Failover' },
+    });
+    expect(toEditPatch(original, { ...original, geoReplication: false })).toEqual({
+      geoReplication: { enabled: false },
+    });
+  });
+});

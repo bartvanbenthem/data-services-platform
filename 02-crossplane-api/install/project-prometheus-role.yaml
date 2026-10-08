@@ -1,0 +1,23 @@
+# Bound to each Project's Prometheus ServiceAccount (one ClusterRoleBinding
+# per Project). Cluster-wide because the kubelet/cAdvisor targets live on the
+# nodes and kube-state-metrics/node-exporter in kube-prometheus-stack's
+# namespace; the namespace's own PodMonitor targets are covered too.
+#
+# Created in every location by the Location composition
+# (apis/location/composition.yaml, which repeats these rules; tests/render
+# checks they match): Projects create the binding in each of their
+# locations. Kept here as the reference copy, and to install by hand in a
+# cluster that isn't a Location yet.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:project-prometheus
+rules:
+  - apiGroups: [""]
+    resources: [nodes, nodes/metrics, nodes/proxy, services, endpoints, pods]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - nonResourceURLs: [/metrics, /metrics/cadvisor]
+    verbs: [get]

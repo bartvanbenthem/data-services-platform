@@ -1,8 +1,13 @@
-# Crossplane v2 composes the CNPG / Prometheus Operator / grafana-operator
-# objects directly with its own ServiceAccount, so that ServiceAccount needs
-# RBAC for exactly these kinds -- nothing else. The aggregate-to-crossplane
-# label merges this ClusterRole into Crossplane's own ClusterRole
+# Crossplane v2 composes objects with its own ServiceAccount, so that
+# ServiceAccount needs RBAC for exactly the kinds the compositions compose on
+# the control plane -- nothing else. The aggregate-to-crossplane label merges
+# these ClusterRoles into Crossplane's own ClusterRole
 # (crossplane:aggregate-to-crossplane), no binding needed.
+#
+# The control plane runs no databases: CNPG and Prometheus Operator objects
+# go to the locations as provider-kubernetes Objects (managed resources,
+# which Crossplane grants itself), applied there with each location's
+# kubeconfig. What PostgresClusters compose here is the GrafanaDashboard.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -10,23 +15,14 @@ metadata:
   labels:
     rbac.crossplane.io/aggregate-to-crossplane: "true"
 rules:
-  - apiGroups: [postgresql.cnpg.io]
-    resources: [clusters, poolers, scheduledbackups, databases]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [barmancloud.cnpg.io]
-    resources: [objectstores]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [monitoring.coreos.com]
-    resources: [podmonitors, prometheusrules]
-    verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [grafana.integreatly.org]
     resources: [grafanadashboards]
     verbs: [get, list, watch, create, update, patch, delete]
 ---
-# What the Project composition (apis/project) composes. Creating
-# (Cluster)RoleBindings is limited by Kubernetes' escalation check, so
+# What the Project composition (apis/project) composes on the control plane.
+# Creating RoleBindings is limited by Kubernetes' escalation check, so
 # instead of holding every permission of the roles it hands out, Crossplane
-# gets "bind" on exactly those four ClusterRoles.
+# gets "bind" on exactly those three ClusterRoles.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -35,14 +31,14 @@ metadata:
     rbac.crossplane.io/aggregate-to-crossplane: "true"
 rules:
   - apiGroups: [""]
-    resources: [namespaces, serviceaccounts, resourcequotas, limitranges, persistentvolumeclaims]
+    resources: [namespaces, serviceaccounts, persistentvolumeclaims]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [rbac.authorization.k8s.io]
-    resources: [rolebindings, clusterrolebindings]
+    resources: [rolebindings]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [clusterroles]
-    resourceNames: [admin, edit, view, "cnpg-platform:project-prometheus"]
+    resourceNames: [admin, edit, view]
     verbs: [bind]
   - apiGroups: [monitoring.coreos.com]
     resources: [prometheuses]
@@ -50,27 +46,40 @@ rules:
   - apiGroups: [grafana.integreatly.org]
     resources: [grafanas, grafanadatasources]
     verbs: [get, list, watch, create, update, patch, delete]
+  # The remote-write endpoint the project's locations send their metrics to.
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The project's backup bucket (COSI): its own BucketClass (Retain), and in
+  # the project namespace one BucketClaim and a BucketAccess per location.
+  # COSI writes each access's credentials Secret; the composition reads it and
+  # composes a Secret with the keys unpacked (Crossplane's own ClusterRole
+  # already covers Secrets).
+  - apiGroups: [objectstorage.k8s.io]
+    resources: [bucketclasses, bucketclaims, bucketaccesses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # One per location of the project: keeps its Location from being deleted.
+  - apiGroups: [protection.crossplane.io]
+    resources: [clusterusages]
+    verbs: [get, list, watch, create, update, patch, delete]
 ---
-# Bound to each Project's Prometheus ServiceAccount (one ClusterRoleBinding
-# per Project). Cluster-wide because the kubelet/cAdvisor targets live on the
-# nodes and kube-state-metrics/node-exporter in kube-prometheus-stack's
-# namespace; the namespace's own PodMonitor targets are covered too.
+# What the Location composition (apis/location) composes on the control
+# plane: the location's provider-kubernetes ClusterProviderConfig. Its
+# Objects are managed resources, which Crossplane grants itself.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: cnpg-platform:project-prometheus
+  name: crossplane:composed:cnpg-platform-locations
+  labels:
+    rbac.crossplane.io/aggregate-to-crossplane: "true"
 rules:
-  - apiGroups: [""]
-    resources: [nodes, nodes/metrics, nodes/proxy, services, endpoints, pods]
-    verbs: [get, list, watch]
-  - apiGroups: [discovery.k8s.io]
-    resources: [endpointslices]
-    verbs: [get, list, watch]
-  - nonResourceURLs: [/metrics, /metrics/cadvisor]
-    verbs: [get]
+  - apiGroups: [kubernetes.m.crossplane.io]
+    resources: [clusterproviderconfigs]
+    verbs: [get, list, watch, create, update, patch, delete]
 ---
 # Lets namespace users manage PostgresClusters through the built-in
-# admin/edit/view roles (e.g. a team's RoleBinding to "edit").
+# admin/edit/view roles (e.g. a team's RoleBinding to "edit" in the project
+# namespace on the control plane).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -116,3 +125,17 @@ rules:
   - apiGroups: [platform.cncp.nl]
     resources: [projects]
     verbs: [get, list, watch, create, update, patch, delete]
+---
+# Locations (Kubernetes clusters the platform can place databases in) are
+# cluster-scoped too, and reference kubeconfig Secrets: reading them is fine
+# for anyone, registering one is a platform-admin job.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cnpg-platform:locations:view
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: [platform.cncp.nl]
+    resources: [locations]
+    verbs: [get, list, watch]

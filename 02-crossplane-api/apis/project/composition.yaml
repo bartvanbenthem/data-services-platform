@@ -1,17 +1,40 @@
 # Composition for platform.cncp.nl/v1alpha1 Project (see definition.yaml).
 #
-# Composes, for Project <name>:
+# Composes, for Project <name>, on the control plane (which runs no
+# databases):
 #   Namespace <name>                      labels platform.cncp.nl/project and
-#                                         dashboards.paas.cncp.nl/scope = <name>
-#   ClusterRoleBinding platform:project:<name>:prometheus
-#                                         -> ClusterRole cnpg-platform:project-prometheus
-#                                            (../../install/rbac.yaml)
-#   ServiceAccount + Prometheus           scrapes the namespace's PodMonitors/
-#                                         PrometheusRules, the CNPG operator's
-#                                         PodMonitor + the cluster metrics
-#                                         from kube-prometheus-stack
+#                                         dashboards.paas.cncp.nl/scope = <name>;
+#                                         where the PostgresCluster XRs live
+#   ServiceAccount + Prometheus           receives the samples of the project's
+#                                         locations (remote write), scrapes nothing
 #   PersistentVolumeClaim                 the Prometheus volume, so it can grow
 #   Grafana + GrafanaDatasource           what PostgresCluster dashboards import into
+#   Ingress prometheus-remote-write       only /api/v1/write, with prometheus.remoteWrite
+#                                         in project-defaults
+#   RoleBinding per spec.access entry
+#   BucketClass project-<name>-backups    COSI, cluster-scoped: deletionPolicy Retain, driver
+#                                         from project-defaults backup.cosi.driverName (not
+#                                         with spec.backup.bucketClassName)
+#   BucketClaim backups                   the project's backup bucket (spec.backup)
+#   BucketAccess backups-<location>       one per location: its own S3 keys, which COSI
+#                                         writes to Secret cosi-backups-<location>
+#   Secret backup-s3-<location>           those keys unpacked from COSI's BucketInfo JSON
+#                                         (ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION), what
+#                                         PostgresClusters copy to that location
+#
+# and in each of its locations, spec.locations.protected (where its
+# databases run) and spec.locations.recovery (optional, where
+# PostgresClusters with geoReplication keep a replica cluster):
+#   Namespace <name>                      never deleted by Crossplane
+#   ClusterRoleBinding platform:project:<name>:prometheus
+#                                         -> ClusterRole cnpg-platform:project-prometheus
+#                                            (created there by the Location)
+#   ServiceAccount + Prometheus + PVC     scrapes the namespace's PodMonitors/
+#                                         PrometheusRules, the CNPG operator's
+#                                         PodMonitor + the cluster metrics from
+#                                         kube-prometheus-stack; externalLabels
+#                                         location/site; remote write to the
+#                                         control plane
 #   RoleBinding per spec.access entry
 #   ResourceQuota + LimitRange            only with spec.quota
 #
@@ -21,6 +44,24 @@
 #
 # Namespaced objects are only rendered once the Namespace is observed, so the
 # first reconcile never fails on "namespace not found".
+#
+# The "location" template renders the namespace and everything in it for one
+# member: "local" (the control plane) is composed directly, each location's
+# objects are wrapped in a provider-kubernetes Object (in the project
+# namespace on the control plane, resource names "location-<location>-<name>")
+# for the ClusterProviderConfig named after the location. The Namespace in a
+# location is never deleted by Crossplane (management policies without
+# Delete): deleting the Project leaves it and any database still in it.
+#
+# Each location names a Location (../location), read as an extra resource. A
+# Project with an unregistered location isn't ready (its objects there are
+# still rendered, so nothing is torn down while a Location is being
+# re-created). Every registered one gets a ClusterUsage, so the Location can't
+# be deleted while the Project uses it. The namespace on the control plane
+# records the locations for the admission policy and the PostgresCluster
+# composition (annotations platform.cncp.nl/protected-location,
+# platform.cncp.nl/recovery-location and, for Locations with schedulable:
+# false, platform.cncp.nl/unschedulable-locations).
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -42,25 +83,20 @@ spec:
         source: Inline
         inline:
           template: |
-            {{- $xr := .observed.composite.resource }}
+            {{- /* ================= location: the namespace and what's in it, for one location =================
+                 . = dict xr, env (project-defaults data), member (location, site, prefix,
+                 observed: normalised observed resources keyed without the prefix),
+                 remoteWriteUrl, remoteWriteHost, unschedulable (registered locations closed
+                 to new databases). Member "local" is the control plane. */}}
+            {{- define "location" }}
+            {{- $xr := .xr }}
             {{- $spec := $xr.spec | default (dict) }}
             {{- $name := $xr.metadata.name }}
             {{- $ns := $name }}
-            {{- $observed := .observed.resources | default (dict) }}
-
-            {{- /* ---- cluster-wide settings: EnvironmentConfig project-defaults ---- */}}
-            ---
-            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
-            kind: ExtraResources
-            requirements:
-              defaults:
-                apiVersion: apiextensions.crossplane.io/v1beta1
-                kind: EnvironmentConfig
-                matchName: project-defaults
-            {{- $env := dict }}
-            {{- with (index (.extraResources | default (dict)) "defaults") }}
-            {{- with .items }}{{ $env = dig "resource" "data" (dict) (first .) }}{{ end }}
-            {{- end }}
+            {{- $m := .member }}
+            {{- $local := eq $m.location "local" }}
+            {{- $observed := $m.observed }}
+            {{- $env := .env }}
             {{- $clusterMetrics := dig "prometheus" "clusterMetrics" (dict) $env }}
             {{- $cmEnabled := dig "enabled" true $clusterMetrics }}
             {{- $cmNamespace := dig "namespace" "prometheus-operator-system" $clusterMetrics }}
@@ -71,13 +107,14 @@ spec:
             {{- $omNamespace := dig "namespace" "cnpg-system" $operatorMetrics }}
             {{- $ingress := dig "grafana" "ingress" (dict) $env }}
             {{- $hostTemplate := dig "hostTemplate" "" $ingress }}
+            {{- $remoteWrite := dig "prometheus" "remoteWrite" (dict) $env }}
 
             {{- /* ---- spec, with the XRD defaults repeated for `crossplane render` and older objects ---- */}}
             {{- $obs := $spec.observability | default (dict) }}
             {{- $prom := $obs.prometheus | default (dict) }}
             {{- $promEnabled := dig "enabled" true $prom }}
             {{- $graf := $obs.grafana | default (dict) }}
-            {{- $grafEnabled := dig "enabled" true $graf }}
+            {{- $grafEnabled := and $local (dig "enabled" true $graf) }}
             {{- $host := "" }}
             {{- if and $grafEnabled (dig "ingress" true $graf) $hostTemplate }}{{ $host = replace "{project}" $name $hostTemplate }}{{ end }}
             {{- $scheme := dig "scheme" "http" $ingress }}
@@ -110,6 +147,27 @@ spec:
                 {{- with $spec.description }}
                 platform.cncp.nl/description: {{ . | quote }}
                 {{- end }}
+                {{- if $local }}
+                # Read by the admission policy that keeps PostgresClusters in
+                # the project's locations (policies.yaml).
+                {{- with dig "locations" "protected" "" $spec }}
+                platform.cncp.nl/protected-location: {{ . | quote }}
+                {{- end }}
+                {{- with dig "locations" "recovery" "" $spec }}
+                platform.cncp.nl/recovery-location: {{ . | quote }}
+                {{- end }}
+                {{- if .backupBucket }}
+                # PostgresClusters may then leave backup.destinationPath out.
+                platform.cncp.nl/backup-bucket: "true"
+                {{- end }}
+                {{- with .unschedulable }}
+                # Locations whose Location says schedulable: false; the same
+                # policy refuses PostgresClusters that newly add them.
+                platform.cncp.nl/unschedulable-locations: {{ join "," . | quote }}
+                {{- end }}
+                {{- else }}
+                platform.cncp.nl/orphan: "true"
+                {{- end }}
               labels:
                 {{- range $k, $v := merge (dict) $labels $scope }}
                 {{ $k }}: {{ $v | quote }}
@@ -122,7 +180,7 @@ spec:
                 pod-security.kubernetes.io/enforce: baseline
                 pod-security.kubernetes.io/warn: restricted
 
-            {{- if $promEnabled }}
+            {{- if and $promEnabled (not $local) }}
             ---
             # Cluster-wide: kubelet/cAdvisor targets live on the nodes and
             # kube-state-metrics/node-exporter in the kube-prometheus-stack
@@ -180,6 +238,19 @@ spec:
               serviceAccountName: prometheus
               replicas: 1
               retention: {{ dig "retention" "7d" $prom | quote }}
+              {{- if $local }}
+              # The Prometheus in the project's locations writes here.
+              enableRemoteWriteReceiver: true
+              {{- else }}
+              # Tells this location's series apart in the shared Grafana.
+              externalLabels:
+                location: {{ $m.location }}
+                site: {{ $m.site }}
+              {{- with .remoteWriteUrl }}
+              remoteWrite:
+                - url: {{ . | quote }}
+              {{- end }}
+              {{- end }}
               resources:
                 requests:
                   cpu: {{ dig "resources" "requests" "cpu" "100m" $prom | quote }}
@@ -205,6 +276,7 @@ spec:
                     resources:
                       requests:
                         storage: {{ dig "storage" "size" "10Gi" $prom | quote }}
+              {{- if not $local }}
               # Every PodMonitor in this namespace (what PostgresClusters
               # create) and, with operator metrics on, the CNPG operator's,
               # which the dashboard's operator panels query.
@@ -251,6 +323,7 @@ spec:
                       - {{ . }}
                       {{- end }}
                 {{- end }}
+              {{- end }}
               {{- end }}
             ---
             # The Prometheus StatefulSet's volume, composed so that growing
@@ -365,6 +438,49 @@ spec:
             {{- end }}
             {{- end }}
 
+            {{- if and $local $promEnabled .remoteWriteHost }}
+            ---
+            # Only the remote-write path: the Prometheus in the locations
+            # push through it. Restrict it with ingress annotations from
+            # project-defaults (prometheus.remoteWrite.annotations), e.g. an
+            # IP allow-list or client certificates.
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: prometheus-remote-write
+              namespace: {{ $ns }}
+              annotations:
+                {{ setResourceNameAnnotation "prometheus-remote-write" }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "prometheus-remote-write" }}"True"{{ else }}"False"{{ end }}
+                {{- range $k, $v := dig "annotations" (dict) $remoteWrite }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              {{- with (dig "className" "" $remoteWrite) }}
+              ingressClassName: {{ . | quote }}
+              {{- end }}
+              rules:
+                - host: {{ .remoteWriteHost | quote }}
+                  http:
+                    paths:
+                      - path: /api/v1/write
+                        pathType: Exact
+                        backend:
+                          service:
+                            name: prometheus-operated
+                            port:
+                              number: 9090
+              {{- with (dig "tlsSecretName" "" $remoteWrite) }}
+              tls:
+                - hosts: [{{ $.remoteWriteHost | quote }}]
+                  secretName: {{ . | quote }}
+              {{- end }}
+            {{- end }}
+
             {{- range $i, $a := $spec.access | default (list) }}
             ---
             apiVersion: rbac.authorization.k8s.io/v1
@@ -390,7 +506,8 @@ spec:
                 name: {{ $a.group | quote }}
             {{- end }}
 
-            {{- if $quota }}
+            {{- /* The quota is for the databases: none on the control plane. */}}
+            {{- if and $quota (not $local) }}
             ---
             apiVersion: v1
             kind: ResourceQuota
@@ -443,14 +560,316 @@ spec:
             {{- end }}
             {{- end }}
 
-            {{- /* ================= XR status ================= */}}
             {{- $waiting := list }}
             {{- if not $nsReady }}{{ $waiting = append $waiting "namespace" }}{{ end }}
             {{- if and $promEnabled (not $promReady) }}{{ $waiting = append $waiting "Prometheus" }}{{ end }}
             {{- if and $grafEnabled (not $grafReady) }}{{ $waiting = append $waiting "Grafana" }}{{ end }}
-            {{- $ready := not $waiting }}
+            {{- /* Read back by the top level (include only returns text). */}}
+            ---
+            kind: LocationStatus
+            waiting: {{ toJson $waiting }}
+            {{- end }}
+
+            {{- /* ================= top level ================= */}}
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec | default (dict) }}
+            {{- $name := $xr.metadata.name }}
+            {{- $ns := $name }}
+            {{- $observed := .observed.resources | default (dict) }}
+            {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "platform.cncp.nl/project" $name }}
+
+            {{- /* ---- cluster-wide settings: EnvironmentConfig project-defaults ---- */}}
+            {{- $extra := .extraResources | default (dict) }}
+            {{- $env := dict }}
+            {{- with (index $extra "defaults") }}
+            {{- with .items }}{{ $env = dig "resource" "data" (dict) (first .) }}{{ end }}
+            {{- end }}
+            {{- $siteLocations := list }}
+            {{- range $site := list "protected" "recovery" }}{{ with dig "locations" $site "" $spec }}{{ $siteLocations = append $siteLocations . }}{{ end }}{{ end }}
+
+            {{- /* ---- backup bucket (COSI); the classes need project-defaults, so this
+                 settles on the second round of extra resources ---- */}}
+            {{- $pb := $spec.backup | default (dict) }}
+            {{- $cosi := dig "backup" "cosi" (dict) $env }}
+            {{- /* The project's own BucketClass (Retain) unless spec.backup names one;
+                 project-defaults bucketClassName is the fallback without a driverName. */}}
+            {{- $ownClass := and (eq ($pb.bucketClassName | default "") "") (ne ($cosi.driverName | default "") "") }}
+            {{- $bucketClass := $pb.bucketClassName | default ($cosi.bucketClassName | default "") }}
+            {{- if $ownClass }}{{ $bucketClass = printf "project-%s-backups" $name }}{{ end }}
+            {{- $accessClass := $pb.bucketAccessClassName | default ($cosi.bucketAccessClassName | default "") }}
+            {{- $bucketOn := and (dig "bucket" true $pb) (ne $bucketClass "") (ne $accessClass "") }}
+            ---
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              defaults:
+                apiVersion: apiextensions.crossplane.io/v1beta1
+                kind: EnvironmentConfig
+                matchName: project-defaults
+              {{- range $siteLocations }}
+              location-{{ . }}:
+                apiVersion: platform.cncp.nl/v1alpha1
+                kind: Location
+                matchName: {{ . }}
+              {{- if $bucketOn }}
+              # What COSI wrote for this location's BucketAccess.
+              cosi-{{ . }}:
+                apiVersion: v1
+                kind: Secret
+                namespace: {{ $ns }}
+                matchName: cosi-backups-{{ . }}
+              {{- end }}
+              {{- end }}
+            {{- $obs := $spec.observability | default (dict) }}
+            {{- $promEnabled := dig "prometheus" "enabled" true $obs }}
+            {{- $grafEnabled := dig "grafana" "enabled" true $obs }}
+            {{- $ingress := dig "grafana" "ingress" (dict) $env }}
+            {{- $hostTemplate := dig "hostTemplate" "" $ingress }}
+            {{- $host := "" }}
+            {{- if and $grafEnabled (dig "grafana" "ingress" true $obs) $hostTemplate }}{{ $host = replace "{project}" $name $hostTemplate }}{{ end }}
+            {{- $scheme := dig "scheme" "http" $ingress }}
+            {{- $scope := dict "dashboards.paas.cncp.nl/scope" $ns }}
+
+            {{- /* ---- observed, normalised: an Object stands for the object it manages ---- */}}
+            {{- $live := dict }}
+            {{- range $k, $v := $observed }}
+            {{- $r := $v.resource | default (dict) }}
+            {{- if and (eq ($r.kind | default "") "Object") (hasPrefix "kubernetes.m.crossplane.io/" ($r.apiVersion | default "")) }}
+            {{- with dig "status" "atProvider" "manifest" (dict) $r }}{{ $_ := set $live $k (dict "resource" .) }}{{ end }}
+            {{- else }}
+            {{- $_ := set $live $k $v }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ---- members: the control plane ("local"), then the protected and recovery locations ---- */}}
+            {{- $members := list (dict "location" "local" "site" "" "prefix" "") }}
+            {{- range $site := list "protected" "recovery" }}
+            {{- with dig "locations" $site "" $spec }}{{ $members = append $members (dict "location" . "site" $site "prefix" (printf "location-%s-" .)) }}{{ end }}
+            {{- end }}
+            {{- $hasRemote := gt (len $members) 1 }}
+            {{- $remoteWrite := dig "prometheus" "remoteWrite" (dict) $env }}
+            {{- $rwHost := "" }}
+            {{- with dig "hostTemplate" "" $remoteWrite }}{{ $rwHost = replace "{project}" $name . }}{{ end }}
+            {{- $rwUrl := "" }}
+            {{- if and $hasRemote $promEnabled $rwHost }}{{ $rwUrl = printf "%s://%s/api/v1/write" (dig "scheme" "https" $remoteWrite) $rwHost }}{{ end }}
+            {{- /* ---- the Location objects of the other locations ---- */}}
+            {{- $registered := dict }}
+            {{- $unschedulable := list }}
+            {{- range $m := rest $members }}
+            {{- with dig (printf "location-%s" $m.location) "items" (list) ($.extraResources | default (dict)) }}
+            {{- $loc := (first .).resource }}
+            {{- $_ := set $registered $m.location $loc }}
+            {{- if eq (dig "spec" "schedulable" true $loc) false }}{{ $unschedulable = append $unschedulable $m.location }}{{ end }}
+            {{- end }}
+            {{- end }}
+            {{- /* Objects live in the project namespace here: none before it exists. */}}
+            {{- $hubNs := index $live "namespace" }}
+
+            {{- /* ================= emit every location's objects ================= */}}
+            {{- $statuses := list }}
+            {{- range $m := $members }}
+            {{- $mobs := dict }}
+            {{- range $k, $v := $live }}{{ if hasPrefix $m.prefix $k }}{{ $_ := set $mobs (trimPrefix $m.prefix $k) $v }}{{ end }}{{ end }}
+            {{- $_ := set $m "observed" $mobs }}
+            {{- $remote := ne $m.location "local" }}
+            {{- $docs := include "location" (dict "xr" $xr "env" $env "member" $m "remoteWriteUrl" $rwUrl "remoteWriteHost" $rwHost "unschedulable" $unschedulable "backupBucket" $bucketOn) }}
+            {{- range $doc := splitList "\n---\n" (printf "\n%s" $docs) }}
+            {{- $obj := fromYaml $doc }}
+            {{- if and $obj (eq ($obj.kind | default "") "LocationStatus") }}
+            {{- $waiting := $obj.waiting | default (list) }}
+            {{- if and $remote (not $hubNs) }}{{ $waiting = list "the project namespace on the control plane" }}{{ end }}
+            {{- $problem := "" }}
+            {{- if and $remote (not (hasKey $registered $m.location)) }}{{ $problem = printf "no Location %s; register the cluster first" $m.location }}{{ end }}
+            {{- $statuses = append $statuses (dict "location" $m.location "site" $m.site "waiting" $waiting "problem" $problem) }}
+            {{- else if and $obj (hasKey $obj "kind") (or (not $remote) $hubNs) }}
+            {{- $ann := $obj.metadata.annotations }}
+            {{- $key := printf "%s%s" $m.prefix (get $ann "gotemplating.fn.crossplane.io/composition-resource-name") }}
+            {{- if not $remote }}
+            {{- $_ := set $ann "gotemplating.fn.crossplane.io/composition-resource-name" $key }}
+            ---
+            {{ toYaml $obj }}
+            {{- else }}
+            {{- $ready := get $ann "gotemplating.fn.crossplane.io/ready" }}
+            {{- $orphan := eq (get $ann "platform.cncp.nl/orphan") "true" }}
+            {{- range $a := list "gotemplating.fn.crossplane.io/composition-resource-name" "gotemplating.fn.crossplane.io/ready" "platform.cncp.nl/orphan" }}{{ $_ := unset $ann $a }}{{ end }}
+            {{- if not $ann }}{{ $_ := unset $obj.metadata "annotations" }}{{ end }}
+            ---
+            apiVersion: kubernetes.m.crossplane.io/v1alpha1
+            kind: Object
+            metadata:
+              name: {{ $key }}
+              namespace: {{ $ns }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $key }}
+                gotemplating.fn.crossplane.io/ready: {{ $ready | quote }}
+                platform.cncp.nl/location: {{ $m.location }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              providerConfigRef:
+                kind: ClusterProviderConfig
+                name: {{ $m.location }}
+              watch: true
+              {{- if $orphan }}
+              # Never delete the namespace in another location: databases may
+              # still run there (no Delete in the management policies).
+              managementPolicies: [Observe, Create, Update, LateInitialize]
+              {{- end }}
+              forProvider:
+                manifest:
+                  {{- toYaml $obj | nindent 6 }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ---- the backup bucket: claim, an access per location, its keys unpacked ---- */}}
+            {{- $bucket := dict }}
+            {{- if and $bucketOn $ownClass }}
+            ---
+            # Retain: deleting the Project (or the claim) leaves the bucket and its
+            # backups; remove them in the object store when they're no longer needed.
+            apiVersion: objectstorage.k8s.io/v1alpha1
+            kind: BucketClass
+            metadata:
+              name: {{ $bucketClass }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: backup-bucketclass
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed "backup-bucketclass" }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            driverName: {{ $cosi.driverName | quote }}
+            deletionPolicy: Retain
+            {{- with $cosi.parameters }}
+            parameters:
+              {{- range $k, $v := . }}
+              {{ $k }}: {{ $v | quote }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $bucketOn }}{{ $bucket = dict "ready" false "namespace" $ns }}{{ end }}
+            {{- /* The rest lives in the project namespace: none before it exists. */}}
+            {{- if and $bucketOn $hubNs }}
+            {{- $claim := dig "backup-bucket" "resource" (dict) $observed }}
+            {{- $bucketName := dig "status" "bucketName" "" $claim }}
+            {{- $bucketReady := and (dig "status" "bucketReady" false $claim) (ne $bucketName "") }}
+            {{- $credentials := dict }}
+            {{- $endpoint := "" }}
+            {{- $region := "" }}
+            ---
+            apiVersion: objectstorage.k8s.io/v1alpha1
+            kind: BucketClaim
+            metadata:
+              name: backups
+              namespace: {{ $ns }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: backup-bucket
+                gotemplating.fn.crossplane.io/ready: {{ if $bucketReady }}"True"{{ else }}"False"{{ end }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              bucketClassName: {{ $bucketClass | quote }}
+              protocols: [S3]
+            {{- range $loc := $siteLocations }}
+            {{- $access := dig (printf "backup-access-%s" $loc) "resource" (dict) $observed }}
+            ---
+            apiVersion: objectstorage.k8s.io/v1alpha1
+            kind: BucketAccess
+            metadata:
+              name: backups-{{ $loc }}
+              namespace: {{ $ns }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: backup-access-{{ $loc }}
+                gotemplating.fn.crossplane.io/ready: {{ if dig "status" "accessGranted" false $access }}"True"{{ else }}"False"{{ end }}
+                platform.cncp.nl/location: {{ $loc }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              bucketClaimName: backups
+              bucketAccessClassName: {{ $accessClass | quote }}
+              credentialsSecretName: cosi-backups-{{ $loc }}
+              protocol: S3
+            {{- /* COSI's Secret holds one BucketInfo JSON document; CNPG needs the keys
+                 as Secret keys of their own. */}}
+            {{- with dig (printf "cosi-%s" $loc) "items" (list) $extra }}
+            {{- $info := dig "resource" "data" "BucketInfo" "" (first .) | b64dec | fromJson }}
+            {{- $s3 := dig "spec" "secretS3" (dict) $info }}
+            {{- if and $s3.accessKeyID $s3.accessSecretKey }}
+            {{- $endpoint = $s3.endpoint | default "" }}
+            {{- $region = $s3.region | default "" }}
+            {{- $_ := set $credentials $loc (printf "backup-s3-%s" $loc) }}
+            ---
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: backup-s3-{{ $loc }}
+              namespace: {{ $ns }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: backup-s3-{{ $loc }}
+                gotemplating.fn.crossplane.io/ready: "True"
+                platform.cncp.nl/location: {{ $loc }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            type: Opaque
+            data:
+              ACCESS_KEY_ID: {{ $s3.accessKeyID | b64enc }}
+              ACCESS_SECRET_KEY: {{ $s3.accessSecretKey | b64enc }}
+              {{- with $s3.region }}
+              REGION: {{ . | b64enc }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- $bucket = dict "ready" (and $bucketReady (eq (len $credentials) (len $siteLocations)) (ne $endpoint "")) "bucket" $bucketName "endpoint" $endpoint "region" $region "namespace" $ns "credentials" $credentials }}
+            {{- end }}
+
+            {{- /* ---- a ClusterUsage per registered location: no deleting a Location a Project uses ---- */}}
+            {{- range $loc := keys $registered | sortAlpha }}
+            ---
+            apiVersion: protection.crossplane.io/v1beta1
+            kind: ClusterUsage
+            metadata:
+              name: project-{{ $name }}-location-{{ $loc }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: usage-location-{{ $loc }}
+                gotemplating.fn.crossplane.io/ready: "True"
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              of:
+                apiVersion: platform.cncp.nl/v1alpha1
+                kind: Location
+                resourceRef:
+                  name: {{ $loc }}
+              reason: {{ printf "Project %s runs databases in this location; delete the Project first" $name | quote }}
+            {{- end }}
+
+            {{- /* ================= XR status ================= */}}
+            {{- $waiting := list }}
+            {{- $problems := list }}
+            {{- range $st := $statuses }}
+            {{- with $st.problem }}{{ $problems = append $problems . }}{{ end }}
+            {{- if eq $st.location "local" }}{{ $waiting = concat $waiting $st.waiting }}
+            {{- else }}{{ range $w := $st.waiting }}{{ $waiting = append $waiting (printf "%s in %s" $w $st.location) }}{{ end }}{{ end }}
+            {{- end }}
+            {{- if and $bucketOn (not $bucket.ready) }}{{ $waiting = append $waiting "the backup bucket (COSI)" }}{{ end }}
+            {{- $ready := not (or $waiting $problems) }}
             {{- $msg := printf "Project %s is ready" $name }}
-            {{- if not $ready }}{{ $msg = printf "Waiting for %s" (join ", " $waiting) }}{{ end }}
+            {{- if $problems }}{{ $msg = join "; " $problems }}
+            {{- else if not $ready }}{{ $msg = printf "Waiting for %s" (join ", " $waiting) }}{{ end }}
+            {{- if and $ready $hasRemote $promEnabled (not $rwUrl) }}{{ $msg = printf "Project %s is ready; metrics stay in its locations and Grafana shows none (no prometheus.remoteWrite in project-defaults)" $name }}{{ end }}
             ---
             apiVersion: platform.cncp.nl/v1alpha1
             kind: Project
@@ -458,9 +877,41 @@ spec:
               ready: {{ $ready }}
               message: {{ $msg | quote }}
               namespace: {{ $ns }}
+              locations:
+                {{- if not $hasRemote }} []{{ end }}
+                {{- range $st := rest $statuses }}
+                - location: {{ $st.location }}
+                  site: {{ $st.site }}
+                  ready: {{ not (or $st.waiting $st.problem) }}
+                  message: {{ $st.problem | default (ternary "ready" (printf "waiting for %s" (join ", " $st.waiting)) (not $st.waiting)) | quote }}
+                {{- end }}
+              {{- if $bucket }}
+              backup:
+                ready: {{ $bucket.ready }}
+                {{- with $bucket.bucket }}
+                bucket: {{ . | quote }}
+                destinationPath: {{ printf "s3://%s/barman" . | quote }}
+                {{- end }}
+                {{- with $bucket.endpoint }}
+                endpoint: {{ . | quote }}
+                {{- end }}
+                {{- with $bucket.region }}
+                region: {{ . | quote }}
+                {{- end }}
+                namespace: {{ $bucket.namespace }}
+                {{- with $bucket.credentials }}
+                credentials:
+                  {{- range $loc, $secret := . }}
+                  {{ $loc }}: {{ $secret }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
               {{- if $promEnabled }}
               prometheus:
                 url: http://prometheus-operated.{{ $ns }}.svc:9090
+                {{- with $rwUrl }}
+                remoteWriteUrl: {{ . | quote }}
+                {{- end }}
               {{- end }}
               {{- if $grafEnabled }}
               grafana:

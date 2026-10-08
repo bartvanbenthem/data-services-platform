@@ -1,0 +1,22 @@
+# After a switchover: the recovery site is primary (status.primaryLocation)
+# and keeps the token it was promoted with until the next switch.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db
+  namespace: payments
+spec:
+  geoReplication:
+    enabled: true
+    primarySite: recovery
+  backup:
+    enabled: true
+    destinationPath: s3://pg-backups/payments
+    s3Credentials:
+      secretName: orders-db-s3
+status:
+  sites:
+    protected: si-ske-demo
+    recovery: onprem-ams
+  primaryLocation: onprem-ams
+  promotionToken: eyJsc24iOiIwLzMwMDAwMDAifQ==

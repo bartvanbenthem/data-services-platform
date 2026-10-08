@@ -1,6 +1,7 @@
 import { renderInTestApp, mockApis } from '@backstage/frontend-test-utils';
 import { permissionApiRef } from '@backstage/plugin-permission-react';
-import { screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { Route, Routes } from 'react-router-dom';
 import type {
   PostgresClusterSummary,
   ProjectSummary,
@@ -8,6 +9,7 @@ import type {
 import { CnpgApi, cnpgApiRef } from '../api';
 import { rootRouteRef } from '../routes';
 import { CreateClusterPage } from './CreateClusterPage';
+import { ProjectDetailPage } from './ProjectDetailPage';
 import { ProjectListPage } from './ProjectListPage';
 
 const project = (over: Partial<ProjectSummary>): ProjectSummary => ({
@@ -20,6 +22,7 @@ const project = (over: Partial<ProjectSummary>): ProjectSummary => ({
   prometheus: true,
   grafana: true,
   grafanaUrl: 'http://grafana-demo.example.com',
+  locations: ['ske'],
   ...over,
 });
 
@@ -79,5 +82,51 @@ describe('CreateClusterPage', () => {
     await renderInTestApp(<CreateClusterPage />, apis(api) as any);
     expect(await screen.findByText('No projects yet')).toBeInTheDocument();
     expect(screen.getByText('Create project')).toBeInTheDocument();
+  });
+});
+
+describe('ProjectDetailPage', () => {
+  const render = (api: Partial<CnpgApi>) =>
+    renderInTestApp(
+      <Routes>
+        <Route path="/p/:name" element={<ProjectDetailPage />} />
+      </Routes>,
+      { ...apis(api), initialRouteEntries: ['/p/demo'] } as any,
+    );
+  const getProject = jest.fn(async () => ({
+    summary: project({}),
+    resource: { apiVersion: 'v1', kind: 'Project', metadata: { name: 'demo' }, spec: {} },
+  }));
+
+  it("won't delete a project that still has clusters", async () => {
+    const api: Partial<CnpgApi> = {
+      getProject,
+      listClusters: jest.fn(async () => [cluster('demo', 'orders-db')]),
+      deleteProject: jest.fn(),
+    };
+    await render(api);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText(/still has 1 PostgreSQL cluster/)).toHaveTextContent('orders-db');
+    expect(dialog.queryByLabelText(/to confirm/)).not.toBeInTheDocument();
+    expect(dialog.getByRole('button', { name: 'Delete' })).toBeDisabled();
+  });
+
+  it('deletes an empty project once its name is typed', async () => {
+    const api: Partial<CnpgApi> = {
+      getProject,
+      listClusters: jest.fn(async () => []),
+      deleteProject: jest.fn(async () => undefined),
+    };
+    await render(api);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText(/namespace in ske stays/)).toBeInTheDocument();
+    const confirm = dialog.getByRole('button', { name: 'Delete' });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(dialog.getByLabelText(/to confirm/), { target: { value: 'demo' } });
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith('demo'));
   });
 });

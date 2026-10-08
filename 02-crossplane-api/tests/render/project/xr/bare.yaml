@@ -1,10 +1,13 @@
-# Observability switched off and no EnvironmentConfig: just the namespace.
+# Observability switched off and no EnvironmentConfig: just the namespace,
+# here and in the protected location.
 apiVersion: platform.cncp.nl/v1alpha1
 kind: Project
 metadata:
   name: sandbox
 spec:
   deletionProtection: false
+  locations:
+    protected: si-ske-demo
   observability:
     prometheus:
       enabled: false

@@ -66,8 +66,10 @@ function fakeK8s() {
     applyProject: jest.fn(async (o: any) => ({ ...demoProject, metadata: { name: o.name } })),
     patch: jest.fn(async () => ordersDb),
     patchProject: jest.fn(async () => demoProject),
-    logs: jest.fn(async (_ns: string, _name: string, o: any) => ({
+    deleteProject: jest.fn(async () => undefined),
+    logs: jest.fn(async (_ns: string, _name: string, o: any, _kubeConfigFor?: unknown) => ({
       pod: o.pod,
+      location: o.location ?? 'ske',
       container: 'postgres',
       text: '{"level":"info","msg":"hi"}\n',
     })),
@@ -78,6 +80,7 @@ const prodLocation = {
   name: 'prod-ams',
   spec: { environment: 'production', region: 'ams' },
   connection: { server: 'https://prod:6443', context: 'prod', auth: 'token', insecureSkipTlsVerify: false },
+  providerConfig: true,
   health: { status: 'healthy', checkedAt: '2026-10-07T09:00:00Z', checks: [] },
 };
 
@@ -92,6 +95,7 @@ function fakeLocations() {
     create: jest.fn(async (o: any) => ({ ...prodLocation, name: o.name })),
     update: jest.fn(async () => prodLocation),
     delete: jest.fn(async () => undefined),
+    kubeConfig: jest.fn(async (name: string) => ({ location: name })),
   };
 }
 
@@ -169,23 +173,57 @@ describe('cnpg backend', () => {
     });
   });
 
+  it('reads a cluster in other locations with their kubeconfig', async () => {
+    const k8s = fakeK8s();
+    const locations = fakeLocations();
+    k8s.details.mockImplementation(async (_ns: string, _name: string, kubeConfigFor: any) => ({
+      summary: { name: 'orders-db', namespace: 'demo' },
+      resource: ordersDb,
+      pods: [],
+      events: [],
+      kc: await kubeConfigFor('prod-ams'),
+    }));
+    const server = await start(k8s, true, locations);
+    const res = await request(server).get('/api/cnpg/clusters/demo/orders-db');
+    expect(res.status).toBe(200);
+    expect(res.body.kc).toEqual({ location: 'prod-ams' });
+    expect(locations.kubeConfig).toHaveBeenCalledWith('prod-ams');
+  });
+
   it('returns pod logs with defaults for the query', async () => {
     const k8s = fakeK8s();
     const server = await start(k8s);
     const res = await request(server).get('/api/cnpg/clusters/demo/orders-db/logs?pod=orders-db-1');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ pod: 'orders-db-1', container: 'postgres' });
-    expect(k8s.logs).toHaveBeenCalledWith('demo', 'orders-db', {
-      pod: 'orders-db-1',
-      tailLines: 500,
-      previous: false,
-    });
+    expect(k8s.logs).toHaveBeenCalledWith(
+      'demo',
+      'orders-db',
+      { pod: 'orders-db-1', tailLines: 500, previous: false },
+      expect.any(Function),
+    );
+  });
+
+  it('passes the location of the pod to the logs', async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    const res = await request(server).get(
+      '/api/cnpg/clusters/demo/orders-db/logs?pod=orders-db-1&location=prod-ams',
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.location).toBe('prod-ams');
+    expect(k8s.logs.mock.calls[0][2]).toMatchObject({ location: 'prod-ams' });
   });
 
   it('rejects invalid log queries', async () => {
     const k8s = fakeK8s();
     const server = await start(k8s);
-    for (const query of ['', '?pod=Bad_Pod', '?pod=orders-db-1&tailLines=100000']) {
+    for (const query of [
+      '',
+      '?pod=Bad_Pod',
+      '?pod=orders-db-1&tailLines=100000',
+      '?pod=orders-db-1&location=Not_A_Location',
+    ]) {
       const res = await request(server).get(`/api/cnpg/clusters/demo/orders-db/logs${query}`);
       expect(res.status).toBe(400);
     }
@@ -199,11 +237,31 @@ describe('cnpg backend', () => {
   });
 
   describe('locations', () => {
-    it('lists locations', async () => {
-      const server = await start(fakeK8s());
+    it('lists locations with the projects that use them', async () => {
+      const k8s = fakeK8s();
+      k8s.listProjects.mockResolvedValue([
+        demoProject,
+        { ...demoProject, metadata: { name: 'ledger' }, spec: { locations: { protected: 'prod-ams' } } },
+      ]);
+      const server = await start(k8s);
       const res = await request(server).get('/api/cnpg/locations');
       expect(res.status).toBe(200);
-      expect(res.body.items).toEqual([expect.objectContaining({ name: 'prod-ams' })]);
+      expect(res.body.items).toEqual([
+        expect.objectContaining({ name: 'prod-ams', projects: ['ledger'] }),
+      ]);
+    });
+
+    it("won't delete a location a project uses", async () => {
+      const k8s = fakeK8s();
+      const locations = fakeLocations();
+      k8s.listProjects.mockResolvedValue([
+        { ...demoProject, metadata: { name: 'ledger' }, spec: { locations: { protected: 'prod-ams' } } },
+      ]);
+      const server = await start(k8s, true, locations);
+      const res = await request(server).delete('/api/cnpg/locations/prod-ams');
+      expect(res.status).toBe(409);
+      expect(res.body.error.message).toContain('ledger');
+      expect(locations.delete).not.toHaveBeenCalled();
     });
 
     it('tests a kubeconfig without storing it on dryRun', async () => {
@@ -250,6 +308,7 @@ describe('cnpg backend', () => {
         { name: 'ok', kubeconfig: 'x', spec: { environment: 'staging' } },
         { name: 'ok', kubeconfig: 'x', spec: { surprise: true } },
         { name: 'ok', kubeconfig: '' },
+        { name: 'local', kubeconfig: 'x' },
       ]) {
         const res = await request(server).post('/api/cnpg/locations').send(body);
         expect(res.status).toBe(400);
@@ -334,6 +393,33 @@ describe('cnpg backend', () => {
       expect(res.status).toBe(400);
     }
     expect(k8s.applyProject).not.toHaveBeenCalled();
+  });
+
+  it("won't delete a project that still has clusters", async () => {
+    const k8s = fakeK8s();
+    const server = await start(k8s);
+    const res = await request(server).delete('/api/cnpg/projects/demo');
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toContain('orders-db');
+    expect(k8s.list).toHaveBeenCalledWith('demo');
+    expect(k8s.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it('deletes an empty project', async () => {
+    const k8s = fakeK8s();
+    k8s.list.mockResolvedValue([]);
+    const server = await start(k8s);
+    const res = await request(server).delete('/api/cnpg/projects/demo');
+    expect(res.status).toBe(200);
+    expect(k8s.deleteProject).toHaveBeenCalledWith('demo');
+  });
+
+  it('denies deleting a project without permission, and 404s a missing one', async () => {
+    const k8s = fakeK8s();
+    k8s.list.mockResolvedValue([]);
+    expect((await request(await start(k8s, false)).delete('/api/cnpg/projects/demo')).status).toBe(403);
+    expect((await request(await start(k8s)).delete('/api/cnpg/projects/nope')).status).toBe(404);
+    expect(k8s.deleteProject).not.toHaveBeenCalled();
   });
 
   it('maps a missing project to 404', async () => {

@@ -90,6 +90,20 @@ export const ClusterListPage = () => {
     },
     { id: 'primary', label: 'Primary', cell: c => <CellText title={c.currentPrimary ?? '-'} /> },
     {
+      id: 'location',
+      label: 'Location',
+      cell: c => (
+        <CellText
+          title={c.primaryLocation || '-'}
+          description={
+            c.recoveryLocation
+              ? `+ replica in ${c.primarySite === 'recovery' ? c.location : c.recoveryLocation}`
+              : undefined
+          }
+        />
+      ),
+    },
+    {
       id: 'features',
       label: 'Features',
       cell: c => (

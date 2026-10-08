@@ -5,12 +5,15 @@
 #  2. `crossplane render` (real function-go-templating image, XRD defaults
 #     applied via --xrd) for every <api>/xr/<case>.yaml, first with nothing
 #     observed, then with <api>/observed/<case>.yaml if present.
-#     <api>/required/<case>.yaml, if present, mocks the resources the
-#     composition requests (the project-defaults EnvironmentConfig).
+#     <api>/required/<case>.yaml (else <api>/required/default.yaml), if
+#     present, mocks the resources the composition requests (the
+#     project-defaults EnvironmentConfig, Locations, the Project).
 #  3. `crossplane resource validate` of every rendered object against the
 #     real CRD schemas: CNPG + Barman Cloud from ../../../01-operator/charts,
-#     Prometheus Operator + grafana-operator from ../crds. Core kinds
-#     (Namespace, RoleBinding, ...) have no CRD and are skipped.
+#     Prometheus Operator, grafana-operator, provider-kubernetes and
+#     Crossplane's ClusterUsage from ../crds. The manifest inside each provider-kubernetes Object (what goes
+#     to a remote location) is validated too. Core kinds (Namespace,
+#     RoleBinding, ...) have no CRD and are skipped.
 #  4. Semantic assertions (<api>/assert.py).
 #
 # Requires the crossplane CLI (v2), helm, python3 + PyYAML, and a Docker API
@@ -21,7 +24,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_ROOT="$(cd "${HERE}/../.." && pwd)"
 OPERATOR_CHARTS="$(cd "${API_ROOT}/../01-operator/charts" && pwd)"
 FUNCTIONS="${API_ROOT}/install/functions.yaml"
-APIS=(postgrescluster project)
+APIS=(postgrescluster project location)
 
 if [[ -z "${DOCKER_HOST:-}" && -S "/run/user/${UID}/podman/podman.sock" ]]; then
   export DOCKER_HOST="unix:///run/user/${UID}/podman/podman.sock"
@@ -58,6 +61,8 @@ for api in "${APIS[@]}"; do
     required=()
     if [[ -f "${dir}/required/${case}.yaml" ]]; then
       required=(--required-resources="${dir}/required/${case}.yaml")
+    elif [[ -f "${dir}/required/default.yaml" ]]; then
+      required=(--required-resources="${dir}/required/default.yaml")
     fi
     for state in empty observed; do
       args=()
@@ -77,10 +82,10 @@ for api in "${APIS[@]}"; do
       # no CRD to validate against.
       python3 -I - "${out}" "${out}.objects" <<'EOF'
 import sys, yaml
-CORE = {"v1", "rbac.authorization.k8s.io/v1"}
-docs = [d for d in yaml.safe_load_all(open(sys.argv[1]))
-        if d and d.get("kind") != "Result" and d.get("apiVersion") not in CORE]
-yaml.safe_dump_all(docs, open(sys.argv[2], "w"))
+CORE = {"v1", "rbac.authorization.k8s.io/v1", "networking.k8s.io/v1", "apiregistration.k8s.io/v1"}
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") != "Result"]
+docs += [d["spec"]["forProvider"]["manifest"] for d in list(docs) if d.get("kind") == "Object"]
+yaml.safe_dump_all([d for d in docs if d.get("apiVersion") not in CORE], open(sys.argv[2], "w"))
 EOF
       if ! crossplane resource validate "${SCHEMAS}" "${out}.objects" --skip-success-results >"${out}.validate" 2>&1; then
         echo "FAIL: schema validation"; cat "${out}.validate"; fail=1

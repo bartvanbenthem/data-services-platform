@@ -1,0 +1,9 @@
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: project-defaults
+data:
+  grafana:
+    ingress:
+      className: haproxy
+      hostTemplate: grafana-{project}.10.0.0.1.nip.io

@@ -11,6 +11,10 @@ export interface ProjectForm {
   name: string;
   owner: string;
   description: string;
+  /** Where the databases run; fixed after creation. */
+  protectedLocation: string;
+  /** Where geo-replicated clusters keep a replica cluster; optional, can be added later, then fixed. */
+  recoveryLocation: string;
   editGroup: string;
   viewGroup: string;
   quotaEnabled: boolean;
@@ -26,6 +30,8 @@ export const defaultProjectForm = (): ProjectForm => ({
   name: '',
   owner: '',
   description: '',
+  protectedLocation: '',
+  recoveryLocation: '',
   editGroup: '',
   viewGroup: '',
   quotaEnabled: false,
@@ -59,6 +65,10 @@ export function validateProject(f: ProjectForm): Partial<Record<keyof ProjectFor
   }
   if (f.owner && !/^[A-Za-z0-9][-A-Za-z0-9_.]{0,62}$/.test(f.owner)) e.owner = 'A group name, e.g. team-payments.';
   if (f.description.length > 200) e.description = 'At most 200 characters.';
+  if (!f.protectedLocation) e.protectedLocation = 'Pick the location the databases run in.';
+  if (f.recoveryLocation && f.recoveryLocation === f.protectedLocation) {
+    e.recoveryLocation = 'Pick another location than the protected one.';
+  }
   if (f.quotaEnabled) {
     if (!/^[0-9]+(\.[0-9]+)?m?$/.test(f.quotaCpu)) e.quotaCpu = 'e.g. 8 or 500m';
     if (!QUANTITY.test(f.quotaMemory)) e.quotaMemory = 'e.g. 32Gi';
@@ -76,6 +86,10 @@ export function toProjectSpec(f: ProjectForm): Record<string, unknown> {
     ...(f.viewGroup.trim() ? [{ group: f.viewGroup.trim(), role: 'view' }] : []),
   ];
   return {
+    locations: {
+      protected: f.protectedLocation,
+      ...(f.recoveryLocation ? { recovery: f.recoveryLocation } : {}),
+    },
     ...(access.length ? { access } : {}),
     ...(f.quotaEnabled
       ? { quota: { cpu: f.quotaCpu, memory: f.quotaMemory, storage: f.quotaStorage } }
@@ -124,6 +138,8 @@ export function fromProject(project: Project): ProjectForm {
     name: metadata.name,
     owner: spec.owner ?? '',
     description: spec.description ?? '',
+    protectedLocation: spec.locations?.protected ?? '',
+    recoveryLocation: spec.locations?.recovery ?? '',
     editGroup: group('edit'),
     viewGroup: group('view'),
     quotaEnabled: Boolean(spec.quota),
@@ -136,12 +152,21 @@ export function fromProject(project: Project): ProjectForm {
   };
 }
 
-/** The Prometheus volume can only grow (the XRD enforces the same). */
+/**
+ * The Prometheus volume can only grow, and the locations can't change once
+ * set; a recovery location can be added (the XRD enforces the same).
+ */
 export function validateProjectEdit(
   original: ProjectForm,
   f: ProjectForm,
 ): Partial<Record<keyof ProjectForm, string>> {
   const e = validateProject(f);
+  if (original.protectedLocation && f.protectedLocation !== original.protectedLocation) {
+    e.protectedLocation = `Fixed: the project's databases run in ${original.protectedLocation}.`;
+  }
+  if (original.recoveryLocation && f.recoveryLocation !== original.recoveryLocation) {
+    e.recoveryLocation = `Fixed: replica clusters run in ${original.recoveryLocation}.`;
+  }
   if (!e.prometheusStorage && toMi(f.prometheusStorage) < toMi(original.prometheusStorage)) {
     e.prometheusStorage = `Can grow but not shrink (now ${original.prometheusStorage}).`;
   }

@@ -27,6 +27,11 @@ export const EditClusterPage = () => {
   });
 
   const { value: config } = useAsync(() => api.getConfig(), [api]);
+  // Where replica clusters may go; outside a Project only the platform cluster.
+  const { value: project } = useAsync(
+    () => api.getProject(namespace).catch(() => undefined),
+    [api, namespace],
+  );
   // Loaded once: polling would overwrite what's being typed.
   const { value: details, error: loadError } = useAsync(
     () => api.getCluster(namespace, name),
@@ -119,6 +124,12 @@ export const EditClusterPage = () => {
                   err={err}
                   storageClasses={config?.storageClasses ?? []}
                   original={original}
+                  sites={{
+                    // Pinned by the composition; the project's until then.
+                    protected: details?.resource.status?.sites?.protected ?? project?.summary.protectedLocation,
+                    recovery: details?.resource.status?.sites?.recovery ?? project?.summary.recoveryLocation,
+                  }}
+                  backupBucket={project?.summary.backupBucket}
                 />
               </Flex>
             </Grid.Item>

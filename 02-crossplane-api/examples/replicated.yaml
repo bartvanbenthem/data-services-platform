@@ -1,0 +1,32 @@
+# A primary in the Project's protected location and a CloudNativePG replica
+# cluster in its recovery location, kept up to date from the WAL archive in
+# the Project's backup bucket (no network path between the two clusters
+# needed).
+#
+# Needs a Project with both locations (examples/project.yaml), each
+# registered (install/add-location.sh), and a backup bucket: COSI classes in
+# project-defaults (backup.cosi). The bucket, and each site's credentials for
+# it, are the Project's; nothing to create here. With a store of your own,
+# set backup.destinationPath, endpointURL and s3Credentials (a Secret in the
+# project namespace, copied to both locations) instead.
+#
+# Switch the primary over to the recovery site with
+#   kubectl -n team-payments patch postgrescluster invoices-db --type merge \
+#     -p '{"spec":{"geoReplication":{"primarySite":"recovery"}}}'
+# and back with primarySite: protected. When the protected location is down,
+# add "promotion":"Failover" to promote the recovery site without waiting for
+# the old primary.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: invoices-db
+  namespace: team-payments
+spec:
+  instances: 3
+  storage:
+    size: 20Gi
+  geoReplication:
+    enabled: true
+    instances: 2
+  backup:
+    enabled: true

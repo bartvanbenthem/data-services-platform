@@ -1,0 +1,141 @@
+# Location: a cluster-scoped Crossplane v2 composite resource. One Location
+# is one Kubernetes cluster that Projects and PostgresClusters place objects
+# in: a Project's protected location (where its databases run) or recovery
+# location (replica clusters). The control plane, where this API runs, runs
+# no databases and is no Location.
+#
+# The kubeconfig stays in a Secret (spec.credentials.secretRef) -- written by
+# the portal, install/add-location.sh, or anything that syncs Secrets
+# (External Secrets, Sealed Secrets). The Location composes everything else:
+# the provider-kubernetes ClusterProviderConfig the Project and
+# PostgresCluster compositions place objects through, the ClusterRole every
+# project's Prometheus binds to in that cluster, and read-only checks for the
+# operators databases there need (CloudNativePG, Prometheus Operator).
+#
+# Projects name Locations (Project spec.locations); the Project
+# composition reads them and adds a ClusterUsage per location, so the API
+# server refuses to delete a Location while a Project uses it.
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: locations.platform.cncp.nl
+spec:
+  group: platform.cncp.nl
+  scope: Cluster
+  names:
+    kind: Location
+    plural: locations
+    shortNames: [loc]
+    categories: [crossplane, cnpg]
+  defaultCompositionRef:
+    name: location
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      additionalPrinterColumns:
+        - name: Environment
+          type: string
+          jsonPath: .spec.environment
+        - name: Region
+          type: string
+          jsonPath: .spec.region
+        - name: Schedulable
+          type: boolean
+          jsonPath: .spec.schedulable
+        - name: Connected
+          type: boolean
+          jsonPath: .status.connected
+        - name: Message
+          type: string
+          jsonPath: .status.message
+          priority: 1
+        # Crossplane appends SYNCED, READY, COMPOSITION and AGE itself.
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: A Kubernetes cluster the platform can run Projects' databases in.
+          x-kubernetes-validations:
+            # Also the ClusterProviderConfig name and part of composed
+            # resource names (location-<location>-<name>) in Projects.
+            - rule: "self.metadata.name.matches('^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$')"
+              message: Location names are lowercase letters, digits and "-", start with a letter, max 40 characters
+            - rule: "self.metadata.name != 'local'"
+              message: '"local" is reserved; pick another name'
+          properties:
+            spec:
+              type: object
+              required: [credentials]
+              properties:
+                displayName:
+                  type: string
+                  maxLength: 100
+                description:
+                  type: string
+                  maxLength: 500
+                environment:
+                  type: string
+                  enum: [production, acceptance, test, development]
+                provider:
+                  type: string
+                  description: Where the cluster runs.
+                  enum: [on-premises, aks, eks, gke, openshift, kind, other]
+                region:
+                  type: string
+                  description: Region or data center, e.g. westeurope or dc-amsterdam-2.
+                  maxLength: 100
+                owner:
+                  type: string
+                  description: Team responsible for the cluster (Backstage group, bare name or entity ref).
+                  maxLength: 253
+                storageClass:
+                  type: string
+                  description: Default StorageClass for databases placed here; unset means the cluster's default.
+                  maxLength: 253
+                schedulable:
+                  type: boolean
+                  description: >-
+                    Whether new databases may be placed here. False keeps what runs there
+                    (and lets it be edited) but refuses PostgresClusters that add this location.
+                  default: true
+                credentials:
+                  type: object
+                  required: [secretRef]
+                  properties:
+                    secretRef:
+                      type: object
+                      description: >-
+                        Secret with a kubeconfig for the cluster: one context, certificates
+                        inlined, no exec plugin (provider-kubernetes runs it from inside the
+                        control plane). Its identity needs cluster-admin or equivalent.
+                      required: [namespace, name]
+                      properties:
+                        namespace:
+                          type: string
+                        name:
+                          type: string
+                        key:
+                          type: string
+                          default: kubeconfig
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                  description: Connected and both operators installed.
+                message:
+                  type: string
+                connected:
+                  type: boolean
+                  description: Crossplane reached the cluster's API server with the kubeconfig.
+                providerConfig:
+                  type: string
+                  description: The provider-kubernetes ClusterProviderConfig compositions place objects through.
+                operators:
+                  type: object
+                  description: Operators found in the cluster (unknown until connected).
+                  properties:
+                    cloudnativepg:
+                      type: boolean
+                    prometheusOperator:
+                      type: boolean

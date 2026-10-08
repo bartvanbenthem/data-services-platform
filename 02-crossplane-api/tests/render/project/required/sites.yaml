@@ -1,0 +1,37 @@
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: project-defaults
+data:
+  grafana:
+    ingress:
+      hostTemplate: grafana-{project}.example.com
+  prometheus:
+    remoteWrite:
+      hostTemplate: prometheus-{project}.example.com
+      className: nginx
+      tlsSecretName: wildcard-example-com
+      annotations:
+        nginx.ingress.kubernetes.io/whitelist-source-range: 192.0.2.0/24
+---
+# Registered, but closed to new databases.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: si-ske-demo
+spec:
+  schedulable: false
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: si-ske-demo
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: onprem-ams
+spec:
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: onprem-ams

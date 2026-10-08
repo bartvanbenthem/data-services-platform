@@ -1,0 +1,14 @@
+# A location with everything in place.
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: si-ske-demo
+spec:
+  displayName: SKE demo
+  environment: test
+  provider: other
+  region: eu01
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: si-ske-demo

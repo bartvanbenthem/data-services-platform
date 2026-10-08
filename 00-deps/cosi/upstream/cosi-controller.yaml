@@ -1,0 +1,182 @@
+# Vendored (not fetched live) COSI controller manifests, rendered with:
+# kubectl kustomize github.com/kubernetes-retired/container-object-storage-interface-controller
+# Source: kubernetes-retired/container-object-storage-interface-controller
+# Upstream hardcodes the "default" namespace (not templated); patched here to
+# deploy into a dedicated cosi-system namespace instead (added below) so this
+# cluster-wide, single-replica controller - shared by every COSI driver on
+# the cluster, not something deploy-cosi-driver.sh's own driver pod runs -
+# doesn't share a lifecycle with any one driver's disposable test namespace.
+# See cosi-api.yaml for why this got vendored instead of applied via -k.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cosi-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: container-object-storage-interface-controller
+    app.kubernetes.io/part-of: container-object-storage-interface
+    app.kubernetes.io/version: main
+  name: objectstorage-controller-sa
+  namespace: cosi-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: container-object-storage-interface-controller
+    app.kubernetes.io/part-of: container-object-storage-interface
+    app.kubernetes.io/version: main
+  name: objectstorage-controller
+  namespace: cosi-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - watch
+  - list
+  - delete
+  - update
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: container-object-storage-interface-controller
+    app.kubernetes.io/part-of: container-object-storage-interface
+    app.kubernetes.io/version: main
+  name: objectstorage-controller-role
+rules:
+- apiGroups:
+  - objectstorage.k8s.io
+  resources:
+  - bucketclaims
+  - bucketaccesses
+  - bucketclaims/status
+  - bucketaccesses/status
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+- apiGroups:
+  - objectstorage.k8s.io
+  resources:
+  - buckets
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - create
+  - delete
+- apiGroups:
+  - objectstorage.k8s.io
+  resources:
+  - bucketclasses
+  - bucketaccessclasses
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - list
+  - watch
+  - create
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - serviceaccounts
+  verbs:
+  - list
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: container-object-storage-interface-controller
+    app.kubernetes.io/part-of: container-object-storage-interface
+    app.kubernetes.io/version: main
+  name: objectstorage-controller
+  namespace: cosi-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: objectstorage-controller
+subjects:
+- kind: ServiceAccount
+  name: objectstorage-controller-sa
+  namespace: cosi-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: container-object-storage-interface-controller
+    app.kubernetes.io/part-of: container-object-storage-interface
+    app.kubernetes.io/version: main
+  name: objectstorage-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: objectstorage-controller-role
+subjects:
+- kind: ServiceAccount
+  name: objectstorage-controller-sa
+  namespace: cosi-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: container-object-storage-interface-controller
+    app.kubernetes.io/part-of: container-object-storage-interface
+    app.kubernetes.io/version: main
+  name: objectstorage-controller
+  namespace: cosi-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: controller
+      app.kubernetes.io/name: container-object-storage-interface-controller
+      app.kubernetes.io/part-of: container-object-storage-interface
+      app.kubernetes.io/version: main
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/name: container-object-storage-interface-controller
+        app.kubernetes.io/part-of: container-object-storage-interface
+        app.kubernetes.io/version: main
+    spec:
+      containers:
+      - args:
+        - --v=5
+        image: gcr.io/k8s-staging-sig-storage/objectstorage-controller:v20221027-v0.1.1-8-g300019f
+        imagePullPolicy: Always
+        name: objectstorage-controller
+      serviceAccountName: objectstorage-controller-sa

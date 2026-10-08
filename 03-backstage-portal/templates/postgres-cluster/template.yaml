@@ -99,20 +99,28 @@ spec:
           title: S3 backups (Barman Cloud)
           type: boolean
           default: false
+        geoReplication:
+          title: Geo replication
+          type: boolean
+          description: >-
+            A replica cluster in the project's recovery location, ready to take over.
+            Needs S3 backups and a project with a recovery location.
+          default: false
       dependencies:
         backup:
           oneOf:
             - properties:
                 backup:
                   const: false
-            - required: [backupDestinationPath, backupSecretName]
-              properties:
+            - properties:
                 backup:
                   const: true
                 backupDestinationPath:
                   title: Destination
                   type: string
-                  description: e.g. s3://my-bucket/postgres
+                  description: >-
+                    e.g. s3://my-bucket/postgres. Leave it and the credentials empty to use the
+                    project's backup bucket (COSI), which geo replication across both sites needs.
                   pattern: '^s3://.+'
                 backupEndpointURL:
                   title: Endpoint URL
@@ -121,7 +129,7 @@ spec:
                 backupSecretName:
                   title: Credentials Secret
                   type: string
-                  description: Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY in the project.
+                  description: Secret with ACCESS_KEY_ID and ACCESS_SECRET_KEY in the project (with a destination of your own).
 
   steps:
     - id: create
@@ -156,6 +164,8 @@ spec:
               enabled: ${{ parameters.monitoring }}
           # Empty optional values are pruned by the action, so a disabled
           # backup section reaches the API as just {enabled: false}.
+          geoReplication:
+            enabled: ${{ parameters.geoReplication }}
           backup:
             enabled: ${{ parameters.backup }}
             destinationPath: ${{ parameters.backupDestinationPath }}

@@ -3,15 +3,46 @@
 # and ../../src/alerts/cnpg-cluster-rules.yaml (escaped for Go templating).
 # Edit this file, then run `make generate`; never edit composition.yaml.
 #
-# Crossplane v2: the namespaced PostgresCluster XR composes the CNPG,
-# Prometheus Operator and grafana-operator objects *directly* -- no
-# provider-kubernetes Object wrappers. Crossplane's own ServiceAccount needs
-# RBAC for those kinds (../../install/rbac.yaml) and reads their live status
-# straight from .observed.resources["<name>"].resource.status.
+# Crossplane v2: the namespaced PostgresCluster XR lives in its Project's
+# namespace on the control plane, which runs no databases. The CNPG and
+# Prometheus Operator objects go to the Project's locations, each wrapped in a
+# provider-kubernetes Object; only the GrafanaDashboard is composed directly
+# (the project's Grafana runs on the control plane).
 #
 # Readiness: every composed resource sets gotemplating.fn.crossplane.io/ready
 # explicitly (non-managed resources have no generic Ready signal), so the
 # XR's own Ready condition means "Cluster healthy + every extra object exists".
+#
+# Sites: the Project (requested as an extra resource, named after the
+# namespace) has a protected location and optionally a recovery location
+# (spec.locations). The XR pins them in status.sites on first use, so a
+# cluster never moves, and a missing Project never empties the composition.
+#
+# Members: the "member" template renders what one location runs (Cluster,
+# backups, databases, poolers, monitors). The protected site is the member
+# with resource-name prefix "", the recovery site (spec.geoReplication) the
+# member with prefix "recovery-". The emitter after the template wraps each
+# object in a provider-kubernetes Object for the ClusterProviderConfig named
+# after the location. .observed.resources is normalised first (an Object's
+# status.atProvider.manifest is its live object), so the member template
+# reads live status as if the objects were local.
+#
+# The replica cluster uses CloudNativePG's distributed topology: both members
+# list each other in externalClusters (WAL from the Barman Cloud object
+# store, one server name per member) and replica.primary names the primary.
+# Changing spec.geoReplication.primarySite first demotes the current
+# primary, then promotes the other site with the demotion token the old
+# primary publishes (promotion: Switchover), or promotes right away
+# (Failover). The XR's status.primaryLocation/promotionToken carry that state
+# between reconciles. Disabling geoReplication while the primary is in the
+# recovery site switches it back first; the replica cluster goes after that.
+#
+# Backups without backup.destinationPath go to the Project's backup bucket
+# (COSI, Project status.backup): every member archives there with the
+# credentials the Project unpacked for its location (Secret
+# backup-s3-<location> in the project namespace), copied to the location as
+# <name>-backup-s3. The bucket is pinned
+# in status.backupStore on first use.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -33,14 +64,20 @@ spec:
         source: Inline
         inline:
           template: |
-            {{- $xr := .observed.composite.resource }}
+            {{- /* ================= member: everything one location runs =================
+                 . = dict xr, member (location, topology, prefix, original, instances,
+                 observed, replica), members, distributed. $observed is the member's
+                 normalised observed resources, keyed without the member prefix. */}}
+            {{- define "member" }}
+            {{- $xr := .xr }}
             {{- $spec := $xr.spec }}
             {{- $name := $xr.metadata.name }}
             {{- $namespace := $xr.metadata.namespace }}
-            {{- $observed := .observed.resources | default (dict) }}
+            {{- $m := .member }}
+            {{- $observed := $m.observed }}
 
             {{- /* ---- defaults (the API server applies the XRD defaults; these keep `crossplane render` and older objects safe) ---- */}}
-            {{- $instances := int ($spec.instances | default 3) }}
+            {{- $instances := int $m.instances }}
             {{- $storage := $spec.storage | default (dict) }}
             {{- $res := $spec.resources | default (dict) }}
             {{- $pg := $spec.postgresql | default (dict) }}
@@ -49,17 +86,16 @@ spec:
             {{- $syncReplicas := int (dig "synchronousReplicas" 0 $ha) }}
             {{- $pooler := $spec.pooler | default (dict) }}
             {{- $poolerEnabled := dig "enabled" false $pooler }}
-            {{- $backup := $spec.backup | default (dict) }}
+            {{- /* The top level resolves the Project's bucket into the member's backup. */}}
+            {{- $backup := $m.backup | default ($spec.backup | default (dict)) }}
             {{- $backupEnabled := dig "enabled" false $backup }}
+            {{- /* Secret name here -> where to copy it from: "<namespace>/<name>", or the same name in the XR's namespace. */}}
+            {{- $copyFrom := $m.copyFrom | default (dict) }}
             {{- $mon := $spec.monitoring | default (dict) }}
             {{- $monEnabled := dig "enabled" true $mon }}
             {{- $monLabels := dig "podMonitorLabels" (dict) $mon }}
             {{- $rulesEnabled := and $monEnabled (dig "prometheusRule" "enabled" true $mon) }}
             {{- $excludeRules := dig "prometheusRule" "excludeRules" (list) $mon }}
-            {{- $dashEnabled := dig "grafanaDashboard" "enabled" true $mon }}
-            {{- $dashSelector := dig "grafanaDashboard" "instanceSelector" (dict) $mon }}
-            {{- if not $dashSelector }}{{ $dashSelector = dict "dashboards.paas.cncp.nl/scope" $namespace }}{{ end }}
-            {{- $dashUid := printf "cnpg-%s" (sha1sum (printf "%s/%s" $namespace $name) | trunc 20) }}
             {{- $objectStoreName := printf "%s-backup" $name }}
 
             {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "cnpg.cncp.nl/postgrescluster" $name }}
@@ -168,12 +204,39 @@ spec:
                 {{- end }}
               {{- end }}
               bootstrap:
+                {{- if $m.original }}
                 initdb:
                   database: {{ dig "name" "app" $db | quote }}
                   owner: {{ dig "owner" "app" $db | quote }}
                   encoding: {{ dig "encoding" "UTF8" $db | quote }}
                   localeCollate: {{ dig "localeCollate" "C" $db | quote }}
                   localeCType: {{ dig "localeCType" "C" $db | quote }}
+                {{- else }}
+                # A replica cluster starts from the original member's base
+                # backup and WAL archive.
+                recovery:
+                  source: {{ $name }}
+                {{- end }}
+              {{- if .distributed }}
+              # Distributed topology: self/primary decide whether this member
+              # is the primary or a replica cluster following source.
+              replica:
+                self: {{ $m.topology }}
+                primary: {{ $m.replica.primary }}
+                source: {{ $m.replica.source }}
+                {{- with $m.replica.promotionToken }}
+                promotionToken: {{ . | quote }}
+                {{- end }}
+              externalClusters:
+                {{- range .members }}
+                - name: {{ .topology }}
+                  plugin:
+                    name: barman-cloud.cloudnative-pg.io
+                    parameters:
+                      barmanObjectName: {{ $objectStoreName }}
+                      serverName: {{ .topology }}
+                {{- end }}
+              {{- end }}
               {{- if or $spec.roles $spec.expose }}
               managed:
                 {{- with $spec.roles }}
@@ -225,6 +288,10 @@ spec:
                   isWALArchiver: true
                   parameters:
                     barmanObjectName: {{ $objectStoreName }}
+                    {{- if not $m.original }}
+                    # Its own folder in the shared object store.
+                    serverName: {{ $m.topology }}
+                    {{- end }}
               {{- end }}
 
             {{- /* ================= Backups: Barman Cloud ObjectStore + ScheduledBackup ================= */}}
@@ -449,6 +516,245 @@ spec:
                     #@ALERT_RULES@
             {{- end }}
 
+            {{- /* ================= Secrets a remote location needs =================
+                 The S3 credentials, endpoint CA and role passwords live in the XR's
+                 namespace on the control plane. The emitter turns these into
+                 Objects that patch data/type from that Secret (provider-kubernetes
+                 references), so the values never appear in the Object spec. */}}
+            {{- $copies := list }}
+            {{- if $backupEnabled }}
+            {{- with $backup.s3Credentials }}{{ $copies = append $copies .secretName }}{{ end }}
+            {{- with $backup.endpointCA }}{{ $copies = append $copies .secretName }}{{ end }}
+            {{- end }}
+            {{- range $spec.roles }}{{ with .passwordSecret }}{{ $copies = append $copies . }}{{ end }}{{ end }}
+            {{- range $secret := $copies | uniq }}
+            ---
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: {{ $secret }}
+              namespace: {{ $namespace }}
+              annotations:
+                {{ setResourceNameAnnotation (printf "secret-%s" $secret) }}
+                gotemplating.fn.crossplane.io/ready: {{ if index $observed (printf "secret-%s" $secret) }}"True"{{ else }}"False"{{ end }}
+                platform.cncp.nl/copy-from: {{ get $copyFrom $secret | default $secret }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ================= top level ================= */}}
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $name := $xr.metadata.name }}
+            {{- $namespace := $xr.metadata.namespace }}
+            {{- $observed := .observed.resources | default (dict) }}
+            {{- $instances := int ($spec.instances | default 3) }}
+            {{- $pooler := $spec.pooler | default (dict) }}
+            {{- $poolerEnabled := dig "enabled" false $pooler }}
+            {{- $backup := $spec.backup | default (dict) }}
+            {{- $backupEnabled := dig "enabled" false $backup }}
+            {{- $mon := $spec.monitoring | default (dict) }}
+            {{- $dashEnabled := dig "grafanaDashboard" "enabled" true $mon }}
+            {{- $dashSelector := dig "grafanaDashboard" "instanceSelector" (dict) $mon }}
+            {{- if not $dashSelector }}{{ $dashSelector = dict "dashboards.paas.cncp.nl/scope" $namespace }}{{ end }}
+            {{- $dashUid := printf "cnpg-%s" (sha1sum (printf "%s/%s" $namespace $name) | trunc 20) }}
+            {{- $labels := dict "app.kubernetes.io/managed-by" "crossplane" "app.kubernetes.io/part-of" "cnpg-platform" "cnpg.cncp.nl/postgrescluster" $name }}
+
+            {{- /* ---- observed, normalised: an Object stands for the object it manages ---- */}}
+            {{- $live := dict }}
+            {{- range $k, $v := $observed }}
+            {{- $r := $v.resource | default (dict) }}
+            {{- if and (eq ($r.kind | default "") "Object") (hasPrefix "kubernetes.m.crossplane.io/" ($r.apiVersion | default "")) }}
+            {{- with dig "status" "atProvider" "manifest" (dict) $r }}{{ $_ := set $live $k (dict "resource" .) }}{{ end }}
+            {{- else }}
+            {{- $_ := set $live $k $v }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ---- sites: pinned in status.sites, else the Project's spec.locations ---- */}}
+            ---
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              project:
+                apiVersion: platform.cncp.nl/v1alpha1
+                kind: Project
+                matchName: {{ $namespace }}
+            {{- $extra := .extraResources | default (dict) }}
+            {{- $project := dict }}
+            {{- with dig "project" "items" (list) $extra }}{{ $project = (first .).resource | default (dict) }}{{ end }}
+            {{- $projectLocations := dig "spec" "locations" (dict) $project }}
+            {{- $sites := dig "status" "sites" (dict) $xr }}
+            {{- $protected := $sites.protected | default ($projectLocations.protected | default "") }}
+            {{- $recovery := $sites.recovery | default ($projectLocations.recovery | default "") }}
+            {{- $geo := $spec.geoReplication | default (dict) }}
+            {{- $geoEnabled := dig "enabled" false $geo }}
+            {{- $prevPrimary := dig "status" "primaryLocation" "" $xr }}
+            {{- /* Geo replication switched off while the primary is in the recovery
+                 site: keep the replica cluster and switch back first. */}}
+            {{- $draining := and (not $geoEnabled) (ne $recovery "") (eq $prevPrimary $recovery) }}
+            {{- $problem := "" }}
+            {{- if not $protected }}
+            {{- /* Never render an empty desired state over a running database. */}}
+            {{- if and (hasKey $extra "project") (gt (len $observed) 1) }}{{ fail (printf "PostgresCluster %s/%s has composed resources but no site: neither status.sites nor Project %s says where it runs" $namespace $name $namespace) }}{{ end }}
+            {{- $problem = printf "Namespace %s is not a Project with a protected location (Project spec.locations.protected)" $namespace }}
+            {{- else if and $geoEnabled (not $recovery) }}
+            {{- $problem = printf "geoReplication is enabled, but Project %s has no recovery location (spec.locations.recovery)" $namespace }}
+            {{- end }}
+
+            {{- /* ---- backup store: the cluster's own, or the Project's bucket (pinned in status.backupStore) ---- */}}
+            {{- $specBackup := $spec.backup | default (dict) }}
+            {{- $projectBucket := and (dig "enabled" false $specBackup) (not $specBackup.destinationPath) }}
+            {{- $store := dict }}
+            {{- if $projectBucket }}
+            {{- $store = dig "status" "backupStore" (dict) $xr }}
+            {{- $pbs := dig "status" "backup" (dict) $project }}
+            {{- if and (not $store.destinationPath) $pbs.ready $pbs.destinationPath }}
+            {{- $store = dict "destinationPath" $pbs.destinationPath "endpointURL" ($pbs.endpoint | default "") "namespace" ($pbs.namespace | default $namespace) "region" (ne ($pbs.region | default "") "") }}
+            {{- end }}
+            {{- if not $store.destinationPath }}
+            {{- /* Never drop WAL archiving from a running cluster. */}}
+            {{- if and (hasKey $extra "project") (gt (len $observed) 1) }}{{ fail (printf "PostgresCluster %s/%s uses the Project's backup bucket, but neither status.backupStore nor Project %s status.backup says which" $namespace $name $namespace) }}{{ end }}
+            {{- if not $problem }}{{ $problem = printf "backup uses the backup bucket of Project %s, which isn't ready (Project spec.backup and COSI)" $namespace }}{{ end }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ---- members: the protected site, then the recovery site ---- */}}
+            {{- $location := $protected }}
+            {{- $members := list }}
+            {{- if and $protected (or (not $projectBucket) $store.destinationPath) }}
+            {{- $members = append $members (dict "location" $protected "site" "protected" "topology" $name "prefix" "" "original" true "instances" $instances) }}
+            {{- if and $recovery (or $geoEnabled $draining) }}
+            {{- $members = append $members (dict "location" $recovery "site" "recovery" "topology" (printf "%s-%s" $name $recovery) "prefix" "recovery-" "original" false "instances" (int ($geo.instances | default $instances))) }}
+            {{- end }}
+            {{- end }}
+            {{- $distributed := gt (len $members) 1 }}
+            {{- $byLocation := dict }}
+            {{- range $m := $members }}
+            {{- $mobs := dict }}
+            {{- range $k, $v := $live }}{{ if or (and $m.original (not (hasPrefix "recovery-" $k))) (and (not $m.original) (hasPrefix $m.prefix $k)) }}{{ $_ := set $mobs (trimPrefix $m.prefix $k) $v }}{{ end }}{{ end }}
+            {{- $_ := set $m "observed" $mobs }}
+            {{- $_ := set $m "cluster" (dig "cluster" "resource" (dict) $mobs) }}
+            {{- $ready := false }}
+            {{- range (dig "status" "conditions" (list) $m.cluster) }}
+            {{- if and (eq .type "Ready") (eq .status "True") }}{{ $ready = true }}{{ end }}
+            {{- end }}
+            {{- $_ := set $m "ready" $ready }}
+            {{- $_ := set $byLocation $m.location $m }}
+            {{- end }}
+
+            {{- if $store.destinationPath }}
+            {{- range $m := $members }}
+            {{- $secret := printf "%s-backup-s3" $name }}
+            {{- $creds := dict "secretName" $secret }}
+            {{- if eq $store.region true }}{{ $_ := set $creds "regionKey" "REGION" }}{{ end }}
+            {{- $b := dict "destinationPath" $store.destinationPath "s3Credentials" $creds }}
+            {{- with $store.endpointURL }}{{ $_ := set $b "endpointURL" . }}{{ end }}
+            {{- $_ := set $m "backup" (merge $b $specBackup) }}
+            {{- $_ := set $m "copyFrom" (dict $secret (printf "%s/backup-s3-%s" $store.namespace $m.location)) }}
+            {{- end }}
+            {{- end }}
+
+            {{- /* ---- which member is primary: target = where it should be, prev = where it was ---- */}}
+            {{- $target := $location }}
+            {{- if and (eq (dig "primarySite" "protected" $geo) "recovery") $geoEnabled (hasKey $byLocation $recovery) }}{{ $target = $recovery }}{{ end }}
+            {{- $prev := dig "status" "primaryLocation" $location $xr }}
+            {{- if not (hasKey $byLocation $prev) }}{{ $prev = $location }}{{ end }}
+            {{- $targetM := get $byLocation $target }}
+            {{- $prevM := get $byLocation $prev }}
+            {{- $current := $target }}
+            {{- $token := "" }}
+            {{- $waiting := false }}
+            {{- if eq $target $prev }}
+            {{- /* Steady: keep the token the primary was promoted with. */}}
+            {{- $token = dig "status" "promotionToken" "" $xr }}
+            {{- else if ne (dig "promotion" "Switchover" $geo) "Failover" }}
+            {{- /* Switchover: prev is demoted below; promote the target once prev
+                 publishes a demotion token no member has been promoted with yet
+                 (an old token from an earlier demotion would be refused). */}}
+            {{- $demotion := dig "status" "demotionToken" "" $prevM.cluster }}
+            {{- $used := list }}
+            {{- range $members }}{{ with dig "status" "lastPromotionToken" "" .cluster }}{{ $used = append $used . }}{{ end }}{{ end }}
+            {{- if and $demotion (not (has $demotion $used)) }}
+            {{- $token = $demotion }}
+            {{- else }}
+            {{- $waiting = true }}
+            {{- $current = $prev }}
+            {{- end }}
+            {{- end }}
+            {{- range $m := $members }}
+            {{- $primary := $targetM.topology }}
+            {{- $source := $targetM.topology }}
+            {{- if eq $m.location $target }}
+            {{- if $waiting }}{{ $primary = $prevM.topology }}{{ end }}
+            {{- /* A primary's source is only used once it is demoted. */}}
+            {{- $source = $prevM.topology }}
+            {{- if eq $target $prev }}
+            {{- range $members }}{{ if and (ne .location $target) (eq $source $targetM.topology) }}{{ $source = .topology }}{{ end }}{{ end }}
+            {{- end }}
+            {{- end }}
+            {{- $role := "replica" }}
+            {{- if eq $m.location $current }}{{ $role = "primary" }}{{ else if and $waiting (eq $m.location $target) }}{{ $role = "promoting" }}{{ end }}
+            {{- $_ := set $m "role" $role }}
+            {{- $_ := set $m "replica" (dict "primary" $primary "source" $source "promotionToken" (ternary $token "" (and (eq $m.location $target) (not $waiting)))) }}
+            {{- end }}
+            {{- $primaryM := get $byLocation $current | default (dict "observed" (dict) "cluster" (dict) "instances" $instances "topology" $name) }}
+
+            {{- /* ================= emit every member's objects ================= */}}
+            {{- range $m := $members }}
+            {{- $docs := include "member" (dict "xr" $xr "member" $m "members" $members "distributed" $distributed) }}
+            {{- range $doc := splitList "\n---\n" (printf "\n%s" $docs) }}
+            {{- $obj := fromYaml $doc }}
+            {{- if and $obj (hasKey $obj "kind") }}
+            {{- $ann := $obj.metadata.annotations }}
+            {{- $key := printf "%s%s" $m.prefix (get $ann "gotemplating.fn.crossplane.io/composition-resource-name") }}
+            {{- $ready := get $ann "gotemplating.fn.crossplane.io/ready" }}
+            {{- $copyFrom := get $ann "platform.cncp.nl/copy-from" }}
+            {{- range $a := list "gotemplating.fn.crossplane.io/composition-resource-name" "gotemplating.fn.crossplane.io/ready" "platform.cncp.nl/copy-from" }}{{ $_ := unset $ann $a }}{{ end }}
+            {{- if not $ann }}{{ $_ := unset $obj.metadata "annotations" }}{{ end }}
+            ---
+            apiVersion: kubernetes.m.crossplane.io/v1alpha1
+            kind: Object
+            metadata:
+              name: {{ printf "%s-%s" $name $key }}
+              namespace: {{ $namespace }}
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $key }}
+                gotemplating.fn.crossplane.io/ready: {{ $ready | quote }}
+                platform.cncp.nl/location: {{ $m.location }}
+              labels:
+                {{- range $k, $v := $labels }}
+                {{ $k }}: {{ $v | quote }}
+                {{- end }}
+            spec:
+              providerConfigRef:
+                kind: ClusterProviderConfig
+                name: {{ $m.location }}
+              # Status changes (CNPG's Cluster.status) show up without waiting
+              # for the poll interval; needs the provider's --enable-watches.
+              watch: true
+              {{- with $copyFrom }}
+              {{- $from := splitList "/" $copyFrom }}
+              references:
+                {{- range $field := list "data" "type" }}
+                - patchesFrom:
+                    apiVersion: v1
+                    kind: Secret
+                    name: {{ last $from }}
+                    namespace: {{ ternary (first $from) $namespace (eq (len $from) 2) }}
+                    fieldPath: {{ $field }}
+                {{- end }}
+              {{- end }}
+              forProvider:
+                manifest:
+                  {{- toYaml $obj | nindent 6 }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+
             {{- /* ================= Grafana dashboard ================= */}}
             {{- if $dashEnabled }}
             ---
@@ -488,13 +794,24 @@ spec:
             {{- end }}
 
             {{- /* ================= XR status ================= */}}
-            {{- $osObs := index $observed "objectstore" }}
+            {{- $cstatus := dig "status" (dict) $primaryM.cluster }}
+            {{- $clusterReady := not $problem }}
+            {{- $notReady := list }}
+            {{- range $members }}{{ if not .ready }}{{ $clusterReady = false }}{{ $notReady = append $notReady .location }}{{ end }}{{ end }}
+            {{- $osObs := index $primaryM.observed "objectstore" }}
             {{- $window := dict }}
-            {{- if $osObs }}{{ $window = dig "resource" "status" "serverRecoveryWindow" $name (dict) $osObs }}{{ end }}
+            {{- if $osObs }}{{ $window = dig "resource" "status" "serverRecoveryWindow" $primaryM.topology (dict) $osObs }}{{ end }}
             {{- $phase := dig "phase" "Provisioning" $cstatus }}
             {{- $ready := int (dig "readyInstances" 0 $cstatus) }}
-            {{- $msg := printf "Waiting for CNPG Cluster %s (phase: %s, %d/%d instances ready)" $name $phase $ready $instances }}
-            {{- if $clusterReady }}{{ $msg = printf "CNPG Cluster %s is ready (%d/%d instances)" $name $ready $instances }}{{ end }}
+            {{- $msg := printf "Waiting for CNPG Cluster %s (phase: %s, %d/%d instances ready)" $name $phase $ready (int $primaryM.instances) }}
+            {{- if $clusterReady }}{{ $msg = printf "CNPG Cluster %s is ready (%d/%d instances)" $name $ready (int $primaryM.instances) }}{{ end }}
+            {{- if $distributed }}
+            {{- if $clusterReady }}{{ $msg = printf "CNPG Cluster %s is ready: primary in %s, %d replica cluster(s)" $name $current (sub (len $members) 1) }}
+            {{- else }}{{ $msg = printf "Waiting for CNPG Cluster %s in %s" $name (join ", " $notReady) }}{{ end }}
+            {{- if $waiting }}{{ $msg = printf "Switching the primary from %s to %s: waiting for the demotion token of %s" $prev $target $prev }}{{ end }}
+            {{- if and $draining (not $waiting) }}{{ $msg = printf "geoReplication is off: switching the primary back to %s before removing the replica cluster in %s" $location $recovery }}{{ end }}
+            {{- end }}
+            {{- with $problem }}{{ $msg = . }}{{ end }}
             ---
             apiVersion: cnpg.cncp.nl/v1alpha1
             kind: PostgresCluster
@@ -506,6 +823,34 @@ spec:
               currentPrimary: {{ dig "currentPrimary" "" $cstatus | quote }}
               image: {{ dig "image" "" $cstatus | quote }}
               message: {{ $msg | quote }}
+              {{- if $store.destinationPath }}
+              backupStore:
+                {{- toYaml $store | nindent 16 }}
+              {{- end }}
+              {{- if $protected }}
+              sites:
+                protected: {{ $protected }}
+                {{- with $recovery }}
+                recovery: {{ . }}
+                {{- end }}
+              primaryLocation: {{ $current }}
+              primarySite: {{ ternary "recovery" "protected" (and (ne $recovery "") (eq $current $recovery)) }}
+              {{- end }}
+              {{- if $token }}
+              promotionToken: {{ $token | quote }}
+              {{- end }}
+              locations:
+                {{- if not $members }} []{{ end }}
+                {{- range $members }}
+                - location: {{ .location }}
+                  site: {{ .site }}
+                  role: {{ .role }}
+                  ready: {{ .ready }}
+                  phase: {{ dig "status" "phase" "Provisioning" .cluster | quote }}
+                  instances: {{ int .instances }}
+                  readyInstances: {{ int (dig "status" "readyInstances" 0 .cluster) }}
+                  currentPrimary: {{ dig "status" "currentPrimary" "" .cluster | quote }}
+                {{- end }}
               endpoints:
                 readWrite: {{ printf "%s-rw.%s.svc" $name $namespace }}
                 readOnly: {{ printf "%s-ro.%s.svc" $name $namespace }}
@@ -538,6 +883,6 @@ spec:
             conditions:
               - type: PostgresReady
                 status: {{ if $clusterReady }}"True"{{ else }}"False"{{ end }}
-                reason: {{ if $clusterReady }}ClusterHealthy{{ else }}ClusterNotReady{{ end }}
+                reason: {{ if $clusterReady }}ClusterHealthy{{ else if $problem }}NoSite{{ else }}ClusterNotReady{{ end }}
                 message: {{ $msg | quote }}
                 target: Composite

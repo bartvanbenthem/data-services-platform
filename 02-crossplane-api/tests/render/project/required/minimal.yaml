@@ -7,3 +7,13 @@ data:
     ingress:
       className: haproxy
       hostTemplate: grafana-{project}.10.0.0.1.nip.io
+---
+apiVersion: platform.cncp.nl/v1alpha1
+kind: Location
+metadata:
+  name: si-ske-demo
+spec:
+  credentials:
+    secretRef:
+      namespace: cnpg-locations
+      name: si-ske-demo

@@ -1,15 +1,15 @@
-# What the portal's backend may do in the platform cluster: manage
-# PostgresClusters, create and change Projects, and read the CNPG Clusters, pods, pod logs, events and namespaces it
-# shows on the detail page, and keep the kubeconfigs of locations (bottom). It never touches CNPG objects directly -- every
-# write goes through the PostgresCluster API (and so through the XRD schema).
+# What the portal's backend may do on the control plane: manage
+# PostgresClusters, create and change Projects, list namespaces, and register
+# locations: Location objects plus their kubeconfigs (bottom). It never
+# touches CNPG objects directly -- every write goes through the
+# PostgresCluster, Project and Location APIs (and so through their XRD
+# schemas). The databases run in the locations: the detail page and the Logs
+# tab read their CNPG Clusters, pods, events and logs with each location's
+# kubeconfig, not with this ServiceAccount.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: backstage
-  labels:
-    # Backstage's own database (database.yaml) lives here, outside any
-    # Project; exempt from the optional require-project policy.
-    platform.cncp.nl/allow-unmanaged-postgres: "true"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -26,21 +26,22 @@ rules:
     resources: [postgresclusters]
     verbs: [get, list, watch, create, update, patch, delete]
   # Projects (namespace + Prometheus + Grafana): list them for the project
-  # picker, create new ones and change their settings. No delete: removing a project removes every
-  # database in it, which stays a kubectl decision (see deletionProtection).
+  # picker, create new ones, change their settings, and delete them once they
+  # have no PostgresClusters left (the backend checks, and patches
+  # deletionProtection off for the delete).
   - apiGroups: [platform.cncp.nl]
     resources: [projects]
-    verbs: [get, list, watch, create, patch]
-  - apiGroups: [postgresql.cnpg.io]
-    resources: [clusters]
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, create, patch, delete]
   - apiGroups: [""]
-    resources: [namespaces, pods, events]
+    resources: [namespaces]
     verbs: [get, list, watch]
-  # The Logs tab: stdout of the cluster's pods (the backend checks the pod's cnpg.io/cluster label).
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
+  # Locations (the clusters databases run in), each pointing at its
+  # kubeconfig Secret (bottom); their composition creates the
+  # ClusterProviderConfig Crossplane places objects through. The API server
+  # refuses deleting one a Project uses.
+  - apiGroups: [platform.cncp.nl]
+    resources: [locations]
+    verbs: [get, list, watch, create, update, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -57,7 +58,8 @@ subjects:
 ---
 # Locations: one Secret per Kubernetes cluster the platform can use, holding
 # its kubeconfig (key "kubeconfig", the layout Crossplane's provider-kubernetes
-# and provider-helm read). Secret access is limited to this namespace.
+# and provider-helm read), referenced by its Location. Secret access is
+# limited to this namespace.
 apiVersion: v1
 kind: Namespace
 metadata:

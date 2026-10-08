@@ -109,7 +109,7 @@ export function createProjectAction(k8s: CnpgKubernetesService) {
           z
             .record(z.unknown())
             .optional()
-            .describe('Further Project spec: access, quota, observability'),
+            .describe('Further Project spec: locations (protected, recovery), access, quota, observability'),
       },
       output: {
         name: z => z.string(),

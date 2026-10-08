@@ -13,6 +13,14 @@
 # Cluster-wide settings (Grafana ingress domain, where kube-prometheus-stack
 # lives) come from the EnvironmentConfig "project-defaults", not from each
 # Project. See ../../README.md.
+#
+# Locations: the platform's control plane (where this API, the portal and
+# the PostgresCluster objects live) runs no databases. A Project has a
+# protected location, where its databases run, and optionally a recovery
+# location, where PostgresClusters with geoReplication keep a replica cluster
+# ready to take over. Both get the namespace, RoleBindings and quota, plus a
+# Prometheus that forwards its metrics to the project's Prometheus on the
+# control plane, so the one Grafana shows databases wherever they run.
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
@@ -39,8 +47,15 @@ spec:
           type: string
           jsonPath: .status.grafana.url
         - name: Protected
+          type: string
+          jsonPath: .spec.locations.protected
+        - name: Recovery
+          type: string
+          jsonPath: .spec.locations.recovery
+        - name: Deletion-Protection
           type: boolean
           jsonPath: .spec.deletionProtection
+          priority: 1
         # Crossplane appends SYNCED, READY, COMPOSITION and AGE itself.
       schema:
         openAPIV3Schema:
@@ -57,9 +72,11 @@ spec:
             # databases and <project> for projects; this keeps them apart.
             - rule: "!self.metadata.name.contains('--')"
               message: Project names can't contain "--"
+          required: [spec]
           properties:
             spec:
               type: object
+              required: [locations]
               properties:
                 owner:
                   type: string
@@ -69,6 +86,60 @@ spec:
                 description:
                   type: string
                   maxLength: 200
+                locations:
+                  type: object
+                  description: >-
+                    Locations (Kubernetes clusters registered with the platform) the project's
+                    databases run in. The control plane itself runs none.
+                  required: [protected]
+                  x-kubernetes-validations:
+                    - rule: "self.protected == oldSelf.protected"
+                      message: locations.protected can't be changed; its databases run there
+                    - rule: "!has(oldSelf.recovery) || (has(self.recovery) && self.recovery == oldSelf.recovery)"
+                      message: locations.recovery can be added, but not changed or removed; replica clusters run there
+                    - rule: "!has(self.recovery) || self.recovery != self.protected"
+                      message: the recovery location must be another location than the protected one
+                  properties:
+                    protected:
+                      type: string
+                      description: Where the project's databases run (their primary, normally).
+                      pattern: '^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$'
+                    recovery:
+                      type: string
+                      description: >-
+                        Where PostgresClusters with geoReplication keep a replica cluster, which
+                        can take over as primary. Optional; can be added later.
+                      pattern: '^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$'
+                backup:
+                  type: object
+                  default: {}
+                  description: >-
+                    An object storage bucket for the project's database backups, provisioned
+                    through COSI (Container Object Storage Interface) on the control plane, with
+                    credentials of its own for each location, in the project namespace. PostgresClusters with backups and no
+                    destinationPath of their own use it, which is what geo replication needs: both
+                    sites archive to and recover from the same bucket. The COSI classes come from
+                    project-defaults (backup.cosi) unless set here.
+                  properties:
+                    bucket:
+                      type: boolean
+                      description: Provision the bucket (only when a BucketClass and BucketAccessClass are known).
+                      default: true
+                    bucketClassName:
+                      type: string
+                      description: >-
+                        An existing COSI BucketClass to use instead of the project's own
+                        (project-<name>-backups, deletionPolicy Retain, driver from
+                        project-defaults). Use one with deletionPolicy Retain: a Delete class
+                        deletes the bucket, and every backup in it, with the Project.
+                      x-kubernetes-validations:
+                        - rule: self == oldSelf
+                          message: bucketClassName can't change; it would provision a new, empty bucket
+                    bucketAccessClassName:
+                      type: string
+                      description: >-
+                        COSI BucketAccessClass. Its driver must hand out S3 keys (the locations use them,
+                        not a ServiceAccount on the control plane).
                 deletionProtection:
                   type: boolean
                   description: >-
@@ -78,7 +149,9 @@ spec:
                   default: true
                 access:
                   type: array
-                  description: Kubernetes groups (from your IdP) that get a RoleBinding in the namespace.
+                  description: >-
+                    Kubernetes groups (from your IdP) that get a RoleBinding in the namespace, on the
+                    control plane (to manage PostgresClusters) and in each location (to see what runs there).
                   maxItems: 20
                   items:
                     type: object
@@ -94,7 +167,7 @@ spec:
                 quota:
                   type: object
                   description: >-
-                    Caps on what the namespace may request in total. Also adds a LimitRange
+                    Caps on what the namespace may request in total, in each location. Also adds a LimitRange
                     with default requests, which a ResourceQuota on cpu/memory needs for
                     pods that don't set their own.
                   properties:
@@ -117,7 +190,10 @@ spec:
                     prometheus:
                       type: object
                       default: {}
-                      description: Prometheus that scrapes every PodMonitor and PrometheusRule in the namespace.
+                      description: >-
+                        Prometheus in each location that scrapes every PodMonitor and PrometheusRule in
+                        the namespace there, and one on the control plane that receives their samples
+                        (remote write) for Grafana. Settings apply to all of them.
                       properties:
                         enabled:
                           type: boolean
@@ -186,12 +262,55 @@ spec:
                   type: string
                 namespace:
                   type: string
+                locations:
+                  type: array
+                  description: Per location (protected first), whether its namespace and Prometheus are ready.
+                  items:
+                    type: object
+                    properties:
+                      location:
+                        type: string
+                      site:
+                        type: string
+                        description: protected or recovery.
+                      ready:
+                        type: boolean
+                      message:
+                        type: string
+                backup:
+                  type: object
+                  description: The project's backup bucket; unset without one.
+                  properties:
+                    ready:
+                      type: boolean
+                      description: Provisioned, and credentials for every location are in place.
+                    bucket:
+                      type: string
+                      description: Bucket name in the object store.
+                    endpoint:
+                      type: string
+                    region:
+                      type: string
+                    destinationPath:
+                      type: string
+                      description: Where PostgresClusters using the bucket archive to (Barman Cloud destinationPath).
+                    namespace:
+                      type: string
+                      description: Namespace on the control plane with the bucket's COSI objects and credentials (the project's).
+                    credentials:
+                      type: object
+                      description: Per location, the Secret in that namespace with its S3 keys (ACCESS_KEY_ID, ACCESS_SECRET_KEY, REGION).
+                      additionalProperties:
+                        type: string
                 prometheus:
                   type: object
                   properties:
                     url:
                       type: string
                       description: In-cluster URL.
+                    remoteWriteUrl:
+                      type: string
+                      description: Where the Prometheus in the project's locations sends its samples; unset without remoteWrite in project-defaults.
                 grafana:
                   type: object
                   properties:

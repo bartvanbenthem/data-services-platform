@@ -1,0 +1,63 @@
+# Observed state for xr/minimal.yaml: connected, CloudNativePG installed, the
+# Prometheus Operator CRDs not (the observe-only Object found nothing).
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: si-ske-demo
+  annotations:
+    crossplane.io/composition-resource-name: providerconfig
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: si-ske-demo-prometheus-role
+  namespace: cnpg-locations
+  annotations:
+    crossplane.io/composition-resource-name: prometheus-role
+status:
+  atProvider:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: cnpg-platform:project-prometheus
+  conditions:
+    - type: Synced
+      status: "True"
+      reason: ReconcileSuccess
+    - type: Ready
+      status: "True"
+      reason: Available
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: si-ske-demo-cnpg
+  namespace: cnpg-locations
+  annotations:
+    crossplane.io/composition-resource-name: cnpg
+status:
+  atProvider:
+    manifest:
+      apiVersion: apiregistration.k8s.io/v1
+      kind: APIService
+      metadata:
+        name: v1.postgresql.cnpg.io
+  conditions:
+    - type: Synced
+      status: "True"
+      reason: ReconcileSuccess
+---
+apiVersion: kubernetes.m.crossplane.io/v1alpha1
+kind: Object
+metadata:
+  name: si-ske-demo-prometheus-operator
+  namespace: cnpg-locations
+  annotations:
+    crossplane.io/composition-resource-name: prometheus-operator
+status:
+  conditions:
+    - type: Synced
+      status: "False"
+      reason: ReconcileError
+      message: "observe failed: cannot observe the resource: observe-only resource does not exist"

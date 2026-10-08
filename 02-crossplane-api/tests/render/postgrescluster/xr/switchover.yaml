@@ -1,0 +1,23 @@
+# primarySite moved from protected (status.primaryLocation, the last
+# reconcile) to recovery. Empty: no demotion token yet, so onprem-ams keeps
+# following si-ske-demo while si-ske-demo is demoted. Observed: si-ske-demo
+# published its token, so onprem-ams is promoted with it.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db
+  namespace: payments
+spec:
+  geoReplication:
+    enabled: true
+    primarySite: recovery
+  backup:
+    enabled: true
+    destinationPath: s3://pg-backups/payments
+    s3Credentials:
+      secretName: orders-db-s3
+status:
+  sites:
+    protected: si-ske-demo
+    recovery: onprem-ams
+  primaryLocation: si-ske-demo
