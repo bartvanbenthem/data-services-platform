@@ -1,2 +1,5 @@
 .e2e/
 __pycache__/
+
+# Local secrets (deps/cosi/install.sh reads env/00-env.sh)
+env/

@@ -1,6 +1,6 @@
 # Toegang tot buckets en configuratie-opties
 
-Dit document beschrijft hoe een applicatie toegang krijgt tot een COSI bucket en welke configuratie opties er zijn. Wat over het gedrag van de Cloudian driver staat, is afgeleid uit de manifests, `lib.sh` en de verify-stap in `deploy-cosi-buckets.sh`.
+Dit document beschrijft hoe een applicatie toegang krijgt tot een COSI bucket en welke configuratie opties er zijn. Wat over het gedrag van de Cloudian driver staat, is afgeleid uit het gedrag op het cluster en de Project-composition ([composition.yaml](../../crossplane-api/apis/project/composition.yaml)).
 
 ## Hoe toegang werkt
 
@@ -20,7 +20,7 @@ BucketAccessClass (cluster-breed)       BucketClaim (namespace)
                     key: BucketInfo  (één JSON-blob)
 ```
 
-1. Er wordt een `BucketAccess` aangemaakt ([manifests/bucketaccess.yaml](manifests/bucketaccess.yaml)). Die verwijst naar een `BucketClaim` en een `BucketAccessClass`, en geeft de naam op van het Secret dat moet worden aangemaakt.
+1. Er wordt een `BucketAccess` aangemaakt (de Project-composition maakt er één per locatie). Die verwijst naar een `BucketClaim` en een `BucketAccessClass`, en geeft de naam op van het Secret dat moet worden aangemaakt.
 2. De sidecar ziet het object en roept `DriverGrantBucketAccess` aan op de Cloudian-driver.
 3. De driver maakt in HyperStore een identiteit aan met rechten op alleen die ene bucket, en een access key/secret key voor die identiteit.
 4. De sidecar schrijft het resultaat naar het Secret. Daarna staat `status.accessGranted: true` op de `BucketAccess`.
@@ -28,7 +28,7 @@ BucketAccessClass (cluster-breed)       BucketClaim (namespace)
 
 ### Inhoud van het Secret
 
-Het Secret heeft geen losse keys zoals `AWS_ACCESS_KEY_ID`, maar één key `BucketInfo` met JSON erin (zie `extract_bucket_info` in [deploy-cosi-buckets.sh](deploy-cosi-buckets.sh)):
+Het Secret heeft geen losse keys zoals `AWS_ACCESS_KEY_ID`, maar één key `BucketInfo` met JSON erin (de Project-composition zet het om naar Secret `backup-s3-<locatie>`):
 
 ```json
 { "spec": {
@@ -48,12 +48,12 @@ Een applicatie kan dus niet simpelweg `envFrom: secretRef` gebruiken. Mogelijkhe
 - **De bucketnaam is niet zelf te kiezen.** De COSI-controller maakt hem aan als `<BucketClassName><claim-UID>`. De app moet de naam uit `BucketInfo` lezen.
 - **Namespace-grens.** `BucketAccess`, `BucketClaim`, `ServiceAccount` en het Secret moeten in dezelfde namespace staan. Toegang vanuit een andere namespace kan in v1alpha1 niet.
 - **Meerdere `BucketAccess`-objecten per claim kan wel.** Elk krijgt een eigen set credentials, bijvoorbeeld één per app. Dan is toegang ook per app in te trekken.
-- **De `serviceAccountName` doet in deze setup waarschijnlijk niets.** In de COSI-spec is `IAM` bedoeld voor workload identity: de pod gebruikt zijn ServiceAccount-token en er komen geen keys in het Secret. De Cloudian-driver geeft in IAM-modus toch statische keys terug, want de verify-stap gebruikt ze. Het ServiceAccount dat het script aanmaakt speelt bij het inloggen dus waarschijnlijk geen rol. *(Aanname, niet geverifieerd tegen de driverbroncode.)*
+- **De `serviceAccountName` doet in deze setup waarschijnlijk niets.** In de COSI-spec is `IAM` bedoeld voor workload identity: de pod gebruikt zijn ServiceAccount-token en er komen geen keys in het Secret. De Cloudian-driver geeft in IAM-modus toch statische keys terug, en de Project-composition gebruikt die. Het ServiceAccount dat de composition aanmaakt speelt bij het inloggen dus waarschijnlijk geen rol. *(Aanname, niet geverifieerd tegen de driverbroncode.)*
 - **Onderscheid tussen read-only en read-write** zit niet in de v1alpha1-spec. Onbekend is of de Cloudian-driver daarvoor `parameters` op de `BucketAccessClass` ondersteunt.
 
 ## Configuratie-opties
 
-### 1. Authenticatie: `AUTH_TYPE` (op de `BucketAccessClass`)
+### 1. Authenticatie: `authenticationType` (op de `BucketAccessClass`)
 
 | | `IAM` (standaard, aanbevolen) | `KEY` |
 |---|---|---|
@@ -61,9 +61,9 @@ Een applicatie kan dus niet simpelweg `envFrom: secretRef` gebruiken. Mogelijkhe
 | Driver heeft nodig | `s3.iamEndpoint`, `s3.accessKey`/`secretAccessKey` | Ook het `admin`-blok: `endpoint`, `username`, `password`, `group` |
 | Waar de buckets komen | In het account van de driver-credentials | In de opgegeven group |
 
-**Let op:** [manifests/helm-values.yaml](manifests/helm-values.yaml) vult het `admin`-blok nu niet in. Met alleen `AUTH_TYPE=KEY` wordt de mode op de `BucketAccessClass` gezet, maar heeft de driver geen admin-credentials en zal de grant falen. Voor KEY-mode moet het `admin`-blok worden toegevoegd aan de values en aan `COSI_TEMPLATE_VARS` in [lib.sh](lib.sh).
+**Let op:** [install.sh](install.sh) zet `IAM` op de `BucketAccessClass` en vult het `admin`-blok niet in. Voor KEY-mode moeten beide in `install.sh` worden aangepast, anders heeft de driver geen admin-credentials en faalt de grant.
 
-### 2. Driver (Helm-values, [deploy-cosi-crds-driver.sh](deploy-cosi-crds-driver.sh))
+### 2. Driver (Helm-values, [install.sh](install.sh))
 
 | Optie | Doel |
 |---|---|
@@ -74,25 +74,18 @@ Een applicatie kan dus niet simpelweg `envFrom: secretRef` gebruiken. Mogelijkhe
 | `disableTLSCertificateCheck` | Alleen voor self-signed. De KPN-endpoints valideren tegen de system store |
 | `admin.*` | Alleen voor KEY-mode, zie hierboven |
 
-### 3. Buckets (`BucketClass`, [manifests/bucketclass.yaml](manifests/bucketclass.yaml))
+### 3. Buckets (`BucketClass`, één per Project)
 
-- **`deletionPolicy`**: `Delete` (nu ingesteld) verwijdert de S3-bucket als de claim wordt verwijderd. `Retain` laat de bucket en de data staan. Voor alles buiten een test is `Retain` meestal de veiligere keuze.
+- **`deletionPolicy`**: `Delete` verwijdert de S3-bucket als de claim wordt verwijderd. `Retain` laat de bucket en de data staan; de Project-composition gebruikt `Retain`.
 - **`parameters`**: een vrije map die naar de driver gaat. Welke keys Cloudian ondersteunt, is niet gedocumenteerd in deze repo.
 
-### 4. Script-variabelen
+### 4. Variabelen van `install.sh` / `uninstall.sh`
 
 | Variabele | Standaard | Opmerking |
 |---|---|---|
-| `NAMESPACE` | `zs3-cosi-test` | Waar de claims, accesses, SA's en Secrets komen |
-| `AUTH_TYPE` | `IAM` | Zie §1 |
-| `BUCKET_NAME_PREFIX` | `cosi-test` | Maximaal **15 tekens**, want `<prefix>-bucketclass` mag niet langer zijn dan 27 (zie `check_bucket_class_name_length`) |
-| `BUCKET_NAMES` | `"1 2"` | Eén claim, access, SA en Secret per suffix |
-| `DISABLE_TLS_CERT_CHECK` | `false` | Geldt zowel voor de driver als voor de `aws` CLI in de verify-stap |
-| `RELEASE_NAME` | `cloudian-cosi-driver` | Naam van de driver-deployment |
-| `AWS_CA_BUNDLE` | system store | Alleen voor de lokale verify, niet voor de cluster |
-
-Voorbeeld:
-
-```bash
-BUCKET_NAME_PREFIX=app BUCKET_NAMES="logs backups" ./deploy-cosi-buckets.sh install
-```
+| `COSI_ACCESS_KEY` / `COSI_SECRET_ACCESS_KEY` | verplicht | Zie §2 (`s3.accessKey` / `secretAccessKey`) |
+| `NAMESPACE` | `kpn-system` | Waar de driver draait |
+| `COSI_S3_ENDPOINT` | `https://s3-eu.ring1.kos.kpn.com` | |
+| `COSI_IAM_ENDPOINT` | `https://s3-eu.ring1.kos.kpn.com:16443` | |
+| `COSI_REGION` | `us-east-01` | |
+| `REMOVE_CRDS` | `false` | Alleen `uninstall.sh`; weigert zolang er nog `Bucket`s zijn |

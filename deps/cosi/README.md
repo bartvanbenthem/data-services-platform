@@ -14,6 +14,18 @@ De scheiding is vergelijkbaar met CSI: de API en de orkestratie zijn vendor-onaf
 | Sidecar | kubernetes-sigs | Draait naast de driver; vertaalt `Bucket`/`BucketAccess` naar gRPC-calls |
 | Driver | Cloudian | Maakt buckets en credentials aan in HyperStore |
 
+## Installatie
+CRD's en controller (`cosi-system`) en de driver (`kpn-system`) staan allemaal in `upstream/`, de scripts hebben geen netwerk nodig behalve het cluster:
+
+```bash
+./install.sh     # keys uit env/00-env.sh; ook om keys of endpoints te wijzigen
+./uninstall.sh   # alleen de driver; buckets en keys blijven
+```
+
+- Draai één driver per cluster. Elke kopie neemt zijn leader-lease in zijn eigen namespace, dus twee kopieën granten elke `BucketAccess` dubbel. `install.sh` weigert als de driver al in een andere namespace draait.
+- Verhuizen naar een andere namespace: `NAMESPACE=<oud> ./uninstall.sh`, daarna `NAMESPACE=<nieuw> ./install.sh`. Buckets, accesses en Secrets verwijzen alleen naar de drivernaam en blijven werken; tussendoor wordt niets gegrant of ingetrokken.
+- `REMOVE_CRDS=true ./uninstall.sh` verwijdert ook CRD's en controller, maar pas als er geen `Bucket` meer is.
+
 ## Flow
 1. Een gebruiker maakt een `BucketClaim` aan.
 2. De controller maakt op basis daarvan een `Bucket`-object aan.
@@ -30,4 +42,4 @@ De huidige Cloudian-driver (`v0.1.0`) ondersteunt alleen `v1alpha1`. Een upgrade
 - We blijven voorlopig op `v1alpha1`, in lijn met de huidige Cloudian-driver.
 - Deze versie wordt upstream niet meer onderhouden, maar is functioneel stabiel.
 - Een upgrade is pas mogelijk zodra Cloudian een driver voor `v1alpha2` uitbrengt. CRD's, controller, sidecar en driver worden dan gelijktijdig vervangen.
-- Controleer dit bij elke nieuwe Cloudian-release: pull de nieuwe chart naar `manifests/upstream/charts/` (zie de header van `deploy-cosi-crds-driver.sh`).
+- Controleer dit bij elke nieuwe Cloudian-release: pull de nieuwe chart naar `upstream/charts/` (zie de header van `install.sh`).

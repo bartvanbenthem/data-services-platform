@@ -4,8 +4,8 @@
 # Originally referenced as kubernetes-sigs/container-object-storage-interface-api, which now
 # redirects here. Applying an unpinned `-k github.com/...` ref on every install let this
 # cluster-shared controller roll/restart unpredictably, which (combined with its 150s
-# leader-election lease) caused BucketClaim reconcile timeouts - see wait_for_bucket_ready()
-# in deploy-cosi-driver.sh. Re-render with the command above if upstream ever un-retires.
+# leader-election lease) caused BucketClaim reconcile timeouts.
+# Re-render with the command above if upstream ever un-retires.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
