@@ -10,10 +10,12 @@
  * Lines that aren't JSON are passed through unchanged.
  */
 
+// Only codes Backstage's LogViewer (AnsiProcessor) understands: it ignores
+// \x1b[0m and \x1b[2m, so a "reset" would leave every following line coloured.
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
+const DIM = '\x1b[90m';
+const RESET = '\x1b[39m';
 
 /** Fields every line has, or that only repeat what the tab already shows. */
 const COMMON = new Set(['level', 'ts', 'logger', 'msg', 'logging_pod', 'caller', 'record']);
