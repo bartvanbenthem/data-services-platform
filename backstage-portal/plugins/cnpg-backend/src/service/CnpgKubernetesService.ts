@@ -34,6 +34,10 @@ import {
   PROJECT_KIND,
   PROJECT_PLURAL,
   PROJECT_VERSION,
+  SIZES_GROUP,
+  SIZES_NAME,
+  SIZES_PLURAL,
+  SIZES_VERSION,
   summarize,
   XR_GROUP,
   XR_KIND,
@@ -387,6 +391,27 @@ export class CnpgKubernetesService {
       return (res.items ?? []) as Project[];
     } catch (e) {
       if (e instanceof NotFoundError) return [];
+      throw e;
+    }
+  }
+
+  /**
+   * data of the postgres-sizes EnvironmentConfig (the sizes spec.size can
+   * name); undefined when there's none, so the form offers only custom resources.
+   */
+  async sizesCatalog(): Promise<unknown> {
+    try {
+      const res = await this.#call(() =>
+        this.#custom.getClusterCustomObject({
+          group: SIZES_GROUP,
+          version: SIZES_VERSION,
+          plural: SIZES_PLURAL,
+          name: SIZES_NAME,
+        }),
+      );
+      return (res as { data?: unknown }).data;
+    } catch (e) {
+      if (e instanceof NotFoundError) return undefined;
       throw e;
     }
   }

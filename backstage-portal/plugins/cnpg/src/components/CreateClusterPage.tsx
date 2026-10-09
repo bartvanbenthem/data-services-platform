@@ -10,7 +10,7 @@ import { cnpgApiRef } from '../api';
 import { clusterRouteRef, createProjectRouteRef } from '../routes';
 import { ClusterFormFields } from './ClusterFormFields';
 import { ManifestPanel } from './common';
-import { ClusterForm, defaultForm, toManifest, toSpec, validate } from './form';
+import { ClusterForm, defaultForm, selectSize, toManifest, toSpec, validate } from './form';
 
 export const CreateClusterPage = () => {
   const api = useApi(cnpgApiRef);
@@ -21,6 +21,8 @@ export const CreateClusterPage = () => {
   const [params] = useSearchParams();
 
   const { value: config } = useAsync(() => api.getConfig(), [api]);
+  // No catalog (or no access to it): custom resources only.
+  const { value: sizes } = useAsync(() => api.listSizes().catch(() => []), [api]);
   // Clusters go into a Project namespace, which comes with its own
   // Prometheus and Grafana; free-text namespaces are no longer offered.
   const { value: projects, loading: projectsLoading } = useAsync(() => api.listProjects(), [api]);
@@ -37,6 +39,13 @@ export const CreateClusterPage = () => {
       setForm(f => (f.namespace ? f : { ...f, namespace: preferred }));
     }
   }, [config, projects]);
+
+  // A new cluster starts at the catalog's first (smallest) size.
+  useEffect(() => {
+    if (sizes?.length) {
+      setForm(f => (f.size ? f : selectSize(f, sizes[0].name, sizes, { suggestVolumes: true })));
+    }
+  }, [sizes]);
 
   /** Selecting a project also suggests its owner, unless one was typed already. */
   const selectProject = (name: string) => {
@@ -107,6 +116,7 @@ export const CreateClusterPage = () => {
                 setForm={update}
                 err={err}
                 storageClasses={config?.storageClasses ?? []}
+                sizes={sizes}
                 projects={projects}
                 onSelectProject={selectProject}
               />

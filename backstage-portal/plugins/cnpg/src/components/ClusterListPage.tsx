@@ -86,7 +86,12 @@ export const ClusterListPage = () => {
     {
       id: 'instances',
       label: 'Instances',
-      cell: c => <CellText title={`${c.readyInstances}/${c.instances}`} />,
+      cell: c => (
+        <CellText
+          title={`${c.readyInstances}/${c.instances}`}
+          description={c.size ? `size ${c.size.toUpperCase()}` : undefined}
+        />
+      ),
     },
     { id: 'primary', label: 'Primary', cell: c => <CellText title={c.currentPrimary ?? '-'} /> },
     {

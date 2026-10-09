@@ -5,6 +5,8 @@
  * reads or sends.
  */
 
+import type { ClusterResources } from './sizes';
+
 export const XR_GROUP = 'cnpg.cncp.nl';
 export const XR_VERSION = 'v1alpha1';
 export const XR_PLURAL = 'postgresclusters';
@@ -69,6 +71,8 @@ export interface PostgresClusterStatus {
   backupStore?: { destinationPath?: string; endpointURL?: string; namespace?: string; region?: boolean };
   /** The Project's locations the cluster was placed in, pinned on first use. */
   sites?: { protected?: string; recovery?: string };
+  /** What the instances run with: spec.size resolved from the catalog, or spec.resources. */
+  sizing?: { size?: string; resources?: ClusterResources; parameters?: Record<string, string> };
   primaryLocation?: string;
   primarySite?: Site;
   locations?: ClusterLocationStatus[];
@@ -96,6 +100,8 @@ export interface PostgresClusterSummary {
   name: string;
   namespace: string;
   postgresVersion?: number;
+  /** spec.size; unset for a cluster with resources of its own. */
+  size?: string;
   instances: number;
   readyInstances: number;
   phase: string;
@@ -198,6 +204,7 @@ export function summarize(cluster: PostgresCluster, project?: Project): Postgres
     name: metadata.name,
     namespace: metadata.namespace,
     postgresVersion: spec.postgresVersion,
+    size: spec.size || undefined,
     instances: spec.instances ?? 0,
     readyInstances: status?.readyInstances ?? 0,
     phase: status?.phase ?? 'Pending',

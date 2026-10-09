@@ -7,7 +7,8 @@
 #     observed, then with <api>/observed/<case>.yaml if present.
 #     <api>/required/<case>.yaml (else <api>/required/default.yaml), if
 #     present, mocks the resources the composition requests (the
-#     project-defaults EnvironmentConfig, Locations, the Project).
+#     project-defaults EnvironmentConfig, Locations, the Project), plus
+#     <api>'s apis/<api>/sizes.yaml (the postgres-sizes catalog) if it has one.
 #  3. `crossplane resource validate` of every rendered object against the
 #     real CRD schemas: CNPG + Barman Cloud from ../../../operator/charts,
 #     Prometheus Operator, grafana-operator, provider-kubernetes and
@@ -58,11 +59,18 @@ for api in "${APIS[@]}"; do
   dir="${HERE}/${api}"
   for xr in "${dir}"/xr/*.yaml; do
     case="$(basename "${xr}" .yaml)"
-    required=()
+    mocks=()
     if [[ -f "${dir}/required/${case}.yaml" ]]; then
-      required=(--required-resources="${dir}/required/${case}.yaml")
+      mocks=("${dir}/required/${case}.yaml")
     elif [[ -f "${dir}/required/default.yaml" ]]; then
-      required=(--required-resources="${dir}/required/default.yaml")
+      mocks=("${dir}/required/default.yaml")
+    fi
+    # The shipped postgres-sizes catalog, as installed.
+    [[ -f "${API_ROOT}/apis/${api}/sizes.yaml" ]] && mocks+=("${API_ROOT}/apis/${api}/sizes.yaml")
+    required=()
+    if [[ ${#mocks[@]} -gt 0 ]]; then
+      for f in "${mocks[@]}"; do cat "${f}"; echo "---"; done >"${OUT}/required-${api}-${case}.yaml"
+      required=(--required-resources="${OUT}/required-${api}-${case}.yaml")
     fi
     for state in empty observed; do
       args=()

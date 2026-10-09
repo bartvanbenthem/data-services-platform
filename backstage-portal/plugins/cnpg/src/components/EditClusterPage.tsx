@@ -27,6 +27,7 @@ export const EditClusterPage = () => {
   });
 
   const { value: config } = useAsync(() => api.getConfig(), [api]);
+  const { value: sizes } = useAsync(() => api.listSizes().catch(() => []), [api]);
   // Where replica clusters may go; outside a Project only the platform cluster.
   const { value: project } = useAsync(
     () => api.getProject(namespace).catch(() => undefined),
@@ -123,6 +124,7 @@ export const EditClusterPage = () => {
                   setForm={update}
                   err={err}
                   storageClasses={config?.storageClasses ?? []}
+                  sizes={sizes}
                   original={original}
                   sites={{
                     // Pinned by the composition; the project's until then.

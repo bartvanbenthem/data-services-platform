@@ -154,6 +154,11 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
   const { summary, resource, pods, events, cnpgStatus } = details;
   const spec = resource.spec;
   const status = resource.status ?? {};
+  // What the instances run with (a size resolved by the composition), else the spec's.
+  const running = status.sizing?.resources ?? spec.resources ?? {};
+  const tuned = Object.entries(status.sizing?.parameters ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join(', ');
   const ns = summary.namespace;
   const h = health(summary);
 
@@ -242,8 +247,12 @@ export const ClusterDetails = ({ details }: { details: PostgresClusterDetails })
             rows={[
               ['Data volume', `${spec.storage?.size ?? '-'}${spec.storage?.storageClass ? ` (${spec.storage.storageClass})` : ''}`],
               ['WAL volume', spec.walStorage ? `${spec.walStorage.size}` : 'shared with data'],
-              ['CPU request', spec.resources?.requests?.cpu ?? '-'],
-              ['Memory', `${spec.resources?.requests?.memory ?? '-'} request / ${spec.resources?.limits?.memory ?? '-'} limit`],
+              ['Size', spec.size ? spec.size.toUpperCase() : 'custom'],
+              ['CPU request', running.requests?.cpu ?? '-'],
+              ['Memory', `${running.requests?.memory ?? '-'} request / ${running.limits?.memory ?? '-'} limit`],
+              ...(tuned
+                ? ([['PostgreSQL tuned', <Mono>{tuned}</Mono>]] as Array<[string, ReactNode]>)
+                : []),
               ['Anti-affinity', spec.highAvailability?.podAntiAffinityType ?? 'preferred'],
               ['Sync replicas', String(spec.highAvailability?.synchronousReplicas ?? 0)],
             ]}

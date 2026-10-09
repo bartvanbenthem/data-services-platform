@@ -42,6 +42,9 @@ spec:
         - name: Version
           type: integer
           jsonPath: .spec.postgresVersion
+        - name: Size
+          type: string
+          jsonPath: .status.sizing.size
         - name: Instances
           type: integer
           jsonPath: .spec.instances
@@ -83,6 +86,8 @@ spec:
                   message: highAvailability.synchronousReplicas must be lower than geoReplication.instances
                 - rule: "has(self.restore) == has(oldSelf.restore)"
                   message: restore can only be set when the cluster is created, and stays
+                - rule: "!has(self.size) || !has(self.resources)"
+                  message: set size or resources, not both (remove spec.resources to move a cluster to a size)
               properties:
                 restore:
                   type: object
@@ -237,30 +242,34 @@ spec:
                     storageClass:
                       type: string
                   required: [size]
+                size:
+                  type: string
+                  description: >-
+                    Size (SKU) from the postgres-sizes EnvironmentConfig, e.g. m: CPU and memory of
+                    each instance plus PostgreSQL settings tuned to them (postgresql.parameters set
+                    here win). Changing it restarts the instances one by one, the primary last
+                    (switchover). Leave it unset to set resources yourself.
+                  pattern: '^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$'
                 resources:
                   type: object
-                  default: {}
-                  description: Requests/limits for each PostgreSQL instance pod. Keep memory request == limit (Guaranteed QoS) in production.
+                  description: >-
+                    Requests/limits for each PostgreSQL instance pod, instead of a size; unset, 500m
+                    CPU and 1Gi memory. Keep memory request == limit (Guaranteed QoS) in production.
                   properties:
                     requests:
                       type: object
-                      default: {}
                       properties:
                         cpu:
                           type: string
-                          default: 500m
                         memory:
                           type: string
-                          default: 1Gi
                     limits:
                       type: object
-                      default: {}
                       properties:
                         cpu:
                           type: string
                         memory:
                           type: string
-                          default: 1Gi
                 postgresql:
                   type: object
                   description: PostgreSQL configuration.
@@ -625,6 +634,23 @@ spec:
                       type: string
                     recovery:
                       type: string
+                sizing:
+                  type: object
+                  description: >-
+                    What the instances run with: spec.size resolved from the postgres-sizes catalog
+                    (or spec.resources). Kept while the catalog can't be read or no longer has the
+                    size, so a running cluster never falls back to the defaults.
+                  properties:
+                    size:
+                      type: string
+                    resources:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    parameters:
+                      type: object
+                      description: PostgreSQL settings from the size, before spec.postgresql.parameters.
+                      additionalProperties:
+                        type: string
                 backupStore:
                   type: object
                   description: >-

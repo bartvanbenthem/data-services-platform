@@ -54,6 +54,13 @@ echo "==> PostgresCluster Composition"
 # in kubectl's client-side last-applied-configuration annotation (256 KiB cap).
 kubectl apply --server-side --force-conflicts -f "${API_DIR}/postgrescluster/composition.yaml"
 
+echo "==> PostgresCluster sizes (catalog, once) + admission policy"
+# The catalog is the platform team's to edit afterwards: never overwrite it.
+if ! kubectl get environmentconfig postgres-sizes >/dev/null 2>&1; then
+  kubectl apply -f "${API_DIR}/postgrescluster/sizes.yaml"
+fi
+kubectl apply -f "${API_DIR}/postgrescluster/policies.yaml"
+
 echo "==> Project XRD + Composition"
 kubectl apply -f "${API_DIR}/project/definition.yaml"
 kubectl wait xrd/projects.platform.cncp.nl --for=condition=Established --timeout=120s

@@ -1,9 +1,31 @@
 import { NumberField, Select, Switch, Text, TextField } from '@backstage/ui';
-import type { ProjectSummary } from '@internal/backstage-plugin-cnpg-common';
+import {
+  ClusterSize,
+  ProjectSummary,
+  sizeLabel,
+} from '@internal/backstage-plugin-cnpg-common';
 import { Section } from './common';
-import { ClusterForm } from './form';
+import { ClusterForm, selectSize } from './form';
 
 const opts = (values: Array<string | number>) => values.map(v => ({ id: String(v), label: String(v) }));
+
+/** Select key for custom resources (size ''). */
+const CUSTOM = '__custom__';
+
+/** The settings a size tunes, e.g. "shared_buffers 2GB, max_connections 200". */
+const SHOWN_PARAMETERS = ['shared_buffers', 'effective_cache_size', 'work_mem', 'max_connections'];
+
+function sizeHelp(size: ClusterSize | undefined, editing: boolean): string {
+  if (!size) {
+    return editing
+      ? 'This size is no longer in the catalog; the cluster keeps what it runs with until you pick another.'
+      : 'Not in the catalog.';
+  }
+  const tuned = SHOWN_PARAMETERS.filter(k => size.parameters[k])
+    .map(k => `${k} ${size.parameters[k]}`)
+    .join(', ');
+  return [size.description, tuned && `PostgreSQL tuned: ${tuned}.`].filter(Boolean).join('. ');
+}
 
 /** Explains a field the edit form shows read-only. */
 const FIXED = 'Fixed after creation.';
@@ -29,6 +51,7 @@ export const ClusterFormFields = ({
   setForm,
   err,
   storageClasses,
+  sizes = [],
   projects,
   onSelectProject,
   original,
@@ -39,6 +62,8 @@ export const ClusterFormFields = ({
   setForm: (update: (f: ClusterForm) => ClusterForm) => void;
   err: (key: keyof ClusterForm) => string | undefined;
   storageClasses: string[];
+  /** The size catalog; without one only custom resources are offered. */
+  sizes?: ClusterSize[];
   projects?: ProjectSummary[];
   onSelectProject?: (name: string) => void;
   original?: ClusterForm;
@@ -216,13 +241,53 @@ export const ClusterFormFields = ({
       </Section>
 
       <Section
-        title="Storage & resources"
+        title="Size & storage"
         description={
           editing
-            ? 'Per instance. Volumes grow online if the StorageClass allows expansion; CPU and memory changes restart the instances one by one, the primary last (switchover).'
-            : 'Per instance.'
+            ? 'Per instance. Volumes grow online if the StorageClass allows expansion; a new size (or CPU and memory) restarts the instances one by one, the primary last (switchover).'
+            : 'Per instance. A size brings CPU, memory and PostgreSQL settings tuned to them.'
         }
       >
+        {(sizes.length > 0 || form.size) && (
+          <Select
+            label="Size"
+            value={form.size || CUSTOM}
+            onChange={k =>
+              setForm(f => selectSize(f, k === CUSTOM ? '' : String(k), sizes, { suggestVolumes: !editing }))
+            }
+            options={[
+              ...sizes.map(s => ({ id: s.name, label: sizeLabel(s) })),
+              // A size dropped from the catalog: shown, but not offered to others.
+              ...(form.size && !sizes.some(s => s.name === form.size)
+                ? [{ id: form.size, label: `${form.size} (no longer in the catalog)` }]
+                : []),
+              { id: CUSTOM, label: 'Custom CPU and memory' },
+            ]}
+            description={
+              form.size
+                ? sizeHelp(sizes.find(s => s.name === form.size), editing)
+                : 'Set CPU and memory yourself; PostgreSQL keeps its default settings unless you tune them.'
+            }
+          />
+        )}
+        {!form.size && (
+          <>
+            <TextField
+              label="CPU request"
+              value={form.cpu}
+              onChange={set('cpu')}
+              description={err('cpu')}
+              isInvalid={Boolean(err('cpu'))}
+            />
+            <TextField
+              label="Memory (request = limit)"
+              value={form.memory}
+              onChange={set('memory')}
+              description={err('memory')}
+              isInvalid={Boolean(err('memory'))}
+            />
+          </>
+        )}
         <TextField
           label="Data volume size"
           value={form.storageSize}
@@ -249,12 +314,6 @@ export const ClusterFormFields = ({
             isInvalid={Boolean(err('walSize'))}
           />
         )}
-        <TextField label="CPU request" value={form.cpu} onChange={set('cpu')} />
-        <TextField
-          label="Memory (request = limit)"
-          value={form.memory}
-          onChange={set('memory')}
-        />
       </Section>
 
       <Section title="High availability">

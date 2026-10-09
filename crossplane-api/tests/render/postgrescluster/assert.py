@@ -58,6 +58,11 @@ EXPECTED = {
     # From a store of its own, without backups: no archive, only the restore store and its credentials.
     "restorecustom": {"cluster", "restore-objectstore", "secret-ledger-db-s3", "podmonitor", "prometheusrule"},
     "restorepending": {"dashboard"},
+    "sized": {"cluster", "podmonitor", "prometheusrule", "dashboard"},
+    "sizegone": {"cluster", "podmonitor", "prometheusrule", "dashboard"},
+    "sizechanged": {"cluster", "podmonitor", "prometheusrule", "dashboard"},
+    # An unknown size: nothing placed until it names one in the catalog.
+    "sizeunknown": {"dashboard"},
 }
 check(set(composed) == EXPECTED[case],
       f"composed resources {sorted(composed)} != expected {sorted(EXPECTED[case])}")
@@ -105,6 +110,9 @@ if case == "noproject":
           f"no sites without a Project: {status}")
     check("not a Project with a protected location" in status.get("message", ""), f"message {status.get('message')}")
     check(conds.get("PostgresReady", {}).get("reason") == "NoSite", "PostgresReady reason NoSite")
+elif case == "sizeunknown":
+    check(status.get("locations") == [] and "sizing" not in status, f"nothing placed yet: {status}")
+    check("size huge is not in the postgres-sizes catalog" in status.get("message", ""), f"message {status.get('message')}")
 elif case in ("bucketpending", "restorepending"):
     check(status.get("locations") == [] and "backupStore" not in status, f"nothing placed yet: {status}")
     verb = "restore reads from" if case == "restorepending" else "backup uses"
@@ -190,7 +198,7 @@ if GEO:
     else:
         primary = exp[3]
         check(roles == {primary: "primary", ({PROTECTED, RECOVERY} - {primary}).pop(): "replica"}, f"roles {roles}")
-elif case not in ("noproject", "bucketpending", "projectbucket", "restored", "restorepending"):
+elif case not in ("noproject", "bucketpending", "projectbucket", "restored", "restorepending", "sizeunknown"):
     ext = [e["name"] for e in live("cluster")["spec"].get("externalClusters", [])]
     check("replica" not in live("cluster")["spec"] and ext == (["restore-source"] if "restore" in xr["spec"] else []),
           f"a single-site cluster has no replica topology: externalClusters {ext}")
@@ -205,10 +213,11 @@ for key, obj in composed.items():
           f"{key}: missing cnpg.cncp.nl/postgrescluster label")
 
 # --- readiness / status
-if state == "empty" or case in ("noproject", "bucketpending", "restorepending"):
+if state == "empty" or case in ("noproject", "bucketpending", "restorepending", "sizeunknown", "sizechanged"):
     check(status.get("ready") is False, "status.ready should be false before the Cluster exists")
     check(conds.get("PostgresReady", {}).get("status") == "False", "PostgresReady should be False")
-    check(conds.get("Ready", {}).get("status") == "False", "XR Ready should be False")
+    if case != "sizechanged":  # its composed resources are all there
+        check(conds.get("Ready", {}).get("status") == "False", "XR Ready should be False")
 else:
     check(status.get("ready") is True, f"status.ready should be true, got {status.get('ready')}")
     want_ready = live("cluster")["spec"]["instances"]
@@ -220,6 +229,40 @@ else:
     if case == "production":
         check(status.get("backup", {}).get("lastSuccessfulBackup") == "2026-10-07T02:00:41Z",
               "backup.lastSuccessfulBackup not mirrored from ObjectStore")
+
+# --- sizing: spec.size from the postgres-sizes catalog (its resources and
+# settings, spec.postgresql.parameters on top), else spec.resources or the
+# defaults; status.sizing says what every site runs with.
+DEFAULT_RESOURCES = {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"memory": "1Gi"}}
+SIZING = {
+    "sized": ("m", {"requests": {"cpu": "2", "memory": "8Gi"}, "limits": {"memory": "8Gi"}},
+              {"shared_buffers": "2GB", "effective_cache_size": "6GB", "work_mem": "16MB",
+               "maintenance_work_mem": "512MB", "max_connections": "200"}),
+    # Kept from status.sizing: the catalog no longer has "retired".
+    "sizegone": ("retired", {"requests": {"cpu": "3", "memory": "12Gi"}, "limits": {"memory": "12Gi"}},
+                 {"shared_buffers": "3GB"}),
+    # Not applied: the instances keep the size they had.
+    "sizechanged": ("m", {"requests": {"cpu": "2", "memory": "8Gi"}, "limits": {"memory": "8Gi"}},
+                    {"shared_buffers": "2GB"}),
+    "production": ("", {"requests": {"cpu": "1", "memory": "4Gi"}, "limits": {"memory": "4Gi"}}, {}),
+}
+if case != "sizeunknown":
+    size, resources, params = SIZING.get(case, ("", DEFAULT_RESOURCES, {}))
+    want = {"size": size, "resources": resources, "parameters": params}
+    check(status.get("sizing") == want, f"status.sizing {status.get('sizing')} != {want}")
+    for key in ("cluster", "recovery-cluster"):
+        if key not in composed:
+            continue
+        spec = live(key)["spec"]
+        check(spec["resources"] == resources, f"{key}: resources {spec['resources']} != {resources}")
+        got = spec.get("postgresql", {}).get("parameters", {})
+        user = xr["spec"].get("postgresql", {}).get("parameters", {})
+        check(got == {**params, **user}, f"{key}: parameters {got} != size's under spec's {{**{params}, **{user}}}")
+if case == "sizechanged":
+    check("size huge is not in the postgres-sizes catalog; the instances keep running as m" in status.get("message", ""),
+          f"message {status.get('message')}")
+if case == "sizegone":
+    check("catalog" not in status.get("message", ""), f"a retired size is no problem: {status.get('message')}")
 
 # --- backup folders: the cluster's name, a folder of its own per replica cluster.
 # The Project keeps an inventory of them through the label on the ObjectStore's Object.

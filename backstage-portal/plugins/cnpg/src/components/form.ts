@@ -4,7 +4,7 @@
  * defaults, and the API server validates the result against the XRD.
  */
 
-import type { PostgresCluster, Site } from '@internal/backstage-plugin-cnpg-common';
+import type { ClusterSize, PostgresCluster, Site } from '@internal/backstage-plugin-cnpg-common';
 
 export interface ClusterForm {
   name: string;
@@ -19,10 +19,13 @@ export interface ClusterForm {
   promotion: 'Switchover' | 'Failover';
   postgresVersion: number;
   instances: number;
+  /** A size from the catalog; '' for custom cpu/memory. */
+  size: string;
   storageSize: string;
   storageClass: string;
   walEnabled: boolean;
   walSize: string;
+  /** Custom resources (size ''). */
   cpu: string;
   memory: string;
   databaseName: string;
@@ -57,6 +60,7 @@ export const defaultForm = (namespace = ''): ClusterForm => ({
   promotion: 'Switchover',
   postgresVersion: 17,
   instances: 3,
+  size: '',
   storageSize: '10Gi',
   storageClass: '',
   walEnabled: false,
@@ -87,6 +91,7 @@ export const defaultForm = (namespace = ''): ClusterForm => ({
 const NAME = /^[a-z]([-a-z0-9]{0,38}[a-z0-9])?$/;
 const QUANTITY = /^[0-9]+(Mi|Gi|Ti)$/;
 const PG_IDENT = /^[a-z_][a-z0-9_]*$/;
+const CPU = /^([0-9]+m|[0-9]+(\.[0-9]+)?)$/;
 
 /** Field-level errors shown inline; the API server remains the final validator. */
 export function validate(f: ClusterForm): Partial<Record<keyof ClusterForm, string>> {
@@ -96,6 +101,8 @@ export function validate(f: ClusterForm): Partial<Record<keyof ClusterForm, stri
   if (f.owner && !/^[A-Za-z0-9][-A-Za-z0-9_.]{0,62}$/.test(f.owner)) e.owner = 'A group name, e.g. team-payments.';
   if (!QUANTITY.test(f.storageSize)) e.storageSize = 'e.g. 20Gi';
   if (f.walEnabled && !QUANTITY.test(f.walSize)) e.walSize = 'e.g. 5Gi';
+  if (!f.size && !CPU.test(f.cpu)) e.cpu = 'Cores or millicores, e.g. 2 or 500m.';
+  if (!f.size && !QUANTITY.test(f.memory)) e.memory = 'e.g. 4Gi';
   if (!PG_IDENT.test(f.databaseName)) e.databaseName = 'A PostgreSQL identifier, e.g. orders.';
   if (!PG_IDENT.test(f.databaseOwner)) e.databaseOwner = 'A PostgreSQL identifier, e.g. orders.';
   if (f.synchronousReplicas >= f.instances) e.synchronousReplicas = 'Must be lower than the number of instances.';
@@ -128,12 +135,17 @@ export function toSpec(f: ClusterForm, { explicit = false } = {}): Record<string
     postgresVersion: f.postgresVersion,
     instances: f.instances,
     storage: { size: f.storageSize, ...(f.storageClass ? { storageClass: f.storageClass } : {}) },
-    resources: {
-      requests: { cpu: f.cpu, memory: f.memory },
-      // Memory limit == request: PostgreSQL can always use the memory the
-      // scheduler reserved for it, and shared_buffers sizing stays predictable.
-      limits: { memory: f.memory },
-    },
+    // A size brings resources and tuned settings; the XRD allows one or the other.
+    ...(f.size
+      ? { size: f.size }
+      : {
+          resources: {
+            requests: { cpu: f.cpu, memory: f.memory },
+            // Memory limit == request: PostgreSQL can always use the memory the
+            // scheduler reserved for it, and shared_buffers sizing stays predictable.
+            limits: { memory: f.memory },
+          },
+        }),
     database: { name: f.databaseName, owner: f.databaseOwner },
     highAvailability: {
       podAntiAffinityType: f.podAntiAffinityType,
@@ -206,6 +218,8 @@ export function fromCluster(cluster: PostgresCluster): ClusterForm {
   const backup = spec.backup ?? {};
   const monitoring = spec.monitoring ?? {};
   const geo = spec.geoReplication ?? {};
+  // A sized cluster's custom fields start from what the size gives it.
+  const resources = spec.resources ?? cluster.status?.sizing?.resources ?? {};
   return {
     ...d,
     name: metadata.name,
@@ -216,12 +230,13 @@ export function fromCluster(cluster: PostgresCluster): ClusterForm {
     promotion: geo.promotion ?? d.promotion,
     postgresVersion: spec.postgresVersion ?? d.postgresVersion,
     instances: spec.instances ?? d.instances,
+    size: spec.size ?? '',
     storageSize: spec.storage?.size ?? d.storageSize,
     storageClass: spec.storage?.storageClass ?? '',
     walEnabled: Boolean(spec.walStorage),
     walSize: spec.walStorage?.size ?? d.walSize,
-    cpu: spec.resources?.requests?.cpu ?? d.cpu,
-    memory: spec.resources?.requests?.memory ?? d.memory,
+    cpu: resources.requests?.cpu ?? d.cpu,
+    memory: resources.requests?.memory ?? d.memory,
     databaseName: spec.database?.name ?? d.databaseName,
     databaseOwner: spec.database?.owner ?? d.databaseOwner,
     podAntiAffinityType: ha.podAntiAffinityType ?? d.podAntiAffinityType,
@@ -257,6 +272,31 @@ export const IMMUTABLE: ReadonlyArray<keyof ClusterForm> = [
   'storageClass',
   'walEnabled',
 ];
+
+/**
+ * Picks a size ('' for custom resources). Custom starts from the resources of
+ * the size it replaces; with `suggestVolumes` (a new cluster) the size's
+ * suggested volumes replace the form's.
+ */
+export function selectSize(
+  f: ClusterForm,
+  name: string,
+  sizes: ClusterSize[],
+  { suggestVolumes = false } = {},
+): ClusterForm {
+  const size = sizes.find(s => s.name === name);
+  if (!size) {
+    const from = sizes.find(s => s.name === f.size)?.resources.requests;
+    return { ...f, size: '', cpu: from?.cpu ?? f.cpu, memory: from?.memory ?? f.memory };
+  }
+  const next = { ...f, size: size.name };
+  if (suggestVolumes && size.storage?.size) {
+    next.storageSize = size.storage.size;
+    next.walEnabled = Boolean(size.storage.walSize);
+    if (size.storage.walSize) next.walSize = size.storage.walSize;
+  }
+  return next;
+}
 
 const UNITS: Record<string, number> = { Mi: 1, Gi: 1024, Ti: 1024 * 1024 };
 

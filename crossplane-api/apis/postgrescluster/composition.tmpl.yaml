@@ -51,6 +51,15 @@
 # <name>-<uid[:8]>, so it never writes into the source's folder, not even when
 # it takes the name of a deleted cluster. Its replica cluster's folder is
 # <that>-<recovery location>.
+#
+# Sizes (spec.size): the EnvironmentConfig "postgres-sizes" (data.sizes, a
+# list of {name, resources, parameters, ...}) says what each size gets: the
+# instances' resources and tuned postgresql.conf settings, under the ones
+# spec.postgresql.parameters sets. Without spec.size, spec.resources (or
+# 500m/1Gi) applies. The result is kept in status.sizing: while the catalog
+# can't be read or has dropped the size, the cluster keeps running with that,
+# never with the defaults. Changing a size in the catalog resizes every cluster
+# of that size (CNPG restarts the instances one by one, the primary last).
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -74,7 +83,7 @@ spec:
           template: |
             {{- /* ================= member: everything one location runs =================
                  . = dict xr, member (location, topology, prefix, original, instances,
-                 observed, replica), members, distributed. $observed is the member's
+                 sizing, observed, replica), members, distributed. $observed is the member's
                  normalised observed resources, keyed without the member prefix. */}}
             {{- define "member" }}
             {{- $xr := .xr }}
@@ -87,8 +96,11 @@ spec:
             {{- /* ---- defaults (the API server applies the XRD defaults; these keep `crossplane render` and older objects safe) ---- */}}
             {{- $instances := int $m.instances }}
             {{- $storage := $spec.storage | default (dict) }}
-            {{- $res := $spec.resources | default (dict) }}
+            {{- /* Resolved by the top level from spec.size (or spec.resources). */}}
+            {{- $res := $m.sizing.resources }}
             {{- $pg := $spec.postgresql | default (dict) }}
+            {{- /* The size's tuned settings, under the ones spec.postgresql sets. */}}
+            {{- $params := merge (deepCopy ($pg.parameters | default (dict))) $m.sizing.parameters }}
             {{- $db := $spec.database | default (dict) }}
             {{- $ha := $spec.highAvailability | default (dict) }}
             {{- $syncReplicas := int (dig "synchronousReplicas" 0 $ha) }}
@@ -187,9 +199,9 @@ spec:
                       cnpg.io/cluster: {{ $name }}
                       cnpg.io/podRole: instance
               {{- end }}
-              {{- if or $pg.parameters $pg.pgHba $pg.sharedPreloadLibraries (gt $syncReplicas 0) }}
+              {{- if or $params $pg.pgHba $pg.sharedPreloadLibraries (gt $syncReplicas 0) }}
               postgresql:
-                {{- with $pg.parameters }}
+                {{- with $params }}
                 parameters:
                   {{- range $k, $v := . }}
                   {{ $k }}: {{ $v | quote }}
@@ -673,6 +685,10 @@ spec:
                 apiVersion: platform.cncp.nl/v1alpha1
                 kind: Project
                 matchName: {{ $namespace }}
+              sizes:
+                apiVersion: apiextensions.crossplane.io/v1beta1
+                kind: EnvironmentConfig
+                matchName: postgres-sizes
             {{- $extra := .extraResources | default (dict) }}
             {{- $project := dict }}
             {{- with dig "project" "items" (list) $extra }}{{ $project = (first .).resource | default (dict) }}{{ end }}
@@ -715,6 +731,43 @@ spec:
             {{- end }}
             {{- end }}
 
+            {{- /* ---- sizing: spec.size from the postgres-sizes catalog, else spec.resources;
+                 status.sizing (what the instances run with now) stands in while the
+                 catalog can't say. ---- */}}
+            {{- $sizeName := $spec.size | default "" }}
+            {{- $pinnedSizing := dig "status" "sizing" (dict) $xr }}
+            {{- $sizing := dict }}
+            {{- if $sizeName }}
+            {{- $catalog := list }}
+            {{- with dig "sizes" "items" (list) $extra }}{{ $catalog = dig "resource" "data" "sizes" (list) (first .) }}{{ end }}
+            {{- range $catalog }}
+            {{- if eq (.name | default "") $sizeName }}{{ $sizing = dict "size" $sizeName "resources" (.resources | default (dict)) "parameters" (.parameters | default (dict)) }}{{ end }}
+            {{- end }}
+            {{- if not $sizing }}
+            {{- if $pinnedSizing.resources }}
+            {{- $sizing = $pinnedSizing }}
+            {{- /* A size retired from the catalog is fine for the clusters that have it;
+                 a change to one that isn't there is not applied. */}}
+            {{- if and (hasKey $extra "sizes") (ne ($pinnedSizing.size | default "") $sizeName) (not $problem) }}{{ $problem = printf "size %s is not in the postgres-sizes catalog; the instances keep running as %s" $sizeName ($pinnedSizing.size | default "before") }}{{ end }}
+            {{- else if gt (len $observed) 1 }}
+            {{- /* Never resize a running database to the defaults. */}}
+            {{- if hasKey $extra "sizes" }}{{ fail (printf "PostgresCluster %s/%s has size %s, which is not in the postgres-sizes catalog, and no status.sizing to keep running with" $namespace $name $sizeName) }}{{ end }}
+            {{- else if not $problem }}
+            {{- $problem = printf "size %s is not in the postgres-sizes catalog (EnvironmentConfig postgres-sizes, data.sizes)" $sizeName }}
+            {{- end }}
+            {{- end }}
+            {{- else }}
+            {{- $sizing = dict "size" "" "resources" ($spec.resources | default (dict)) "parameters" (dict) }}
+            {{- end }}
+            {{- /* The defaults, so status.sizing says what really runs. */}}
+            {{- if $sizing }}
+            {{- $r := $sizing.resources | default (dict) }}
+            {{- $limits := dict "memory" (dig "limits" "memory" "1Gi" $r) }}
+            {{- with dig "limits" "cpu" "" $r }}{{ $_ := set $limits "cpu" . }}{{ end }}
+            {{- $sizing = dict "size" ($sizing.size | default "") "parameters" ($sizing.parameters | default (dict))
+                  "resources" (dict "requests" (dict "cpu" (dig "requests" "cpu" "500m" $r) "memory" (dig "requests" "memory" "1Gi" $r)) "limits" $limits) }}
+            {{- end }}
+
             {{- /* ---- archive folders: the cluster's name, or a new one for a restored
                  cluster (never the folder it restores from) ---- */}}
             {{- $server := $name }}
@@ -723,10 +776,10 @@ spec:
             {{- /* ---- members: the protected site, then the recovery site ---- */}}
             {{- $location := $protected }}
             {{- $members := list }}
-            {{- if and $protected (or (not (or $projectBucket $restoreFromProject)) $store.destinationPath) }}
-            {{- $members = append $members (dict "location" $protected "site" "protected" "topology" $server "prefix" "" "original" true "instances" $instances) }}
+            {{- if and $protected $sizing (or (not (or $projectBucket $restoreFromProject)) $store.destinationPath) }}
+            {{- $members = append $members (dict "location" $protected "site" "protected" "topology" $server "prefix" "" "original" true "instances" $instances "sizing" $sizing) }}
             {{- if and $recovery (or $geoEnabled $draining) }}
-            {{- $members = append $members (dict "location" $recovery "site" "recovery" "topology" (printf "%s-%s" $server $recovery) "prefix" "recovery-" "original" false "instances" (int ($geo.instances | default $instances))) }}
+            {{- $members = append $members (dict "location" $recovery "site" "recovery" "topology" (printf "%s-%s" $server $recovery) "prefix" "recovery-" "original" false "instances" (int ($geo.instances | default $instances)) "sizing" $sizing) }}
             {{- end }}
             {{- end }}
             {{- $distributed := gt (len $members) 1 }}
@@ -935,6 +988,10 @@ spec:
               {{- if $store.destinationPath }}
               backupStore:
                 {{- toYaml $store | nindent 16 }}
+              {{- end }}
+              {{- with $sizing }}
+              sizing:
+                {{- toYaml . | nindent 16 }}
               {{- end }}
               {{- if $protected }}
               sites:

@@ -21,8 +21,9 @@ metadata:
   name: orders-db
   namespace: demo
 spec:
+  size: s          # 1 vCPU, 4Gi memory per instance, PostgreSQL tuned to it
   storage:
-    size: 10Gi
+    size: 20Gi
 ```
 
 It runs in its Project's protected location. See [`examples/production.yaml`](examples/production.yaml) for every option, and
@@ -55,8 +56,40 @@ uid. A `PostgresReady` condition sits next to Crossplane's own `Ready`/`Synced`.
 **Changing a live cluster**: everything except `postgresVersion` (forward only, a major upgrade),
 `database`, `restore` and the storage classes can change in place. The XRD lets volumes (`storage`, `walStorage`)
 grow but not shrink, keeps their `storageClass` fixed, and doesn't let `walStorage` be removed. CNPG grows
-PVCs online when the StorageClass has `allowVolumeExpansion`; CPU/memory changes restart the instances one
-by one, the primary last (switchover).
+PVCs online when the StorageClass has `allowVolumeExpansion`; size and CPU/memory changes restart the
+instances one by one, the primary last (switchover).
+
+## Sizes
+
+`spec.size` picks a size (SKU) from the catalog, the EnvironmentConfig `postgres-sizes`
+([`apis/postgrescluster/sizes.yaml`](apis/postgrescluster/sizes.yaml)). `install/install.sh`
+installs it once and never overwrites it, so the platform team can edit the object on the control plane.
+A size gives each instance its CPU and memory, plus `postgresql.conf` settings tuned to that memory
+(`shared_buffers`, `effective_cache_size`, `work_mem`, `maintenance_work_mem`, `max_connections`).
+Settings in `spec.postgresql.parameters` override the size's settings. Volumes stay separate
+(`spec.storage`, `spec.walStorage`), since they can only grow. The portal suggests each size's
+volumes for a new cluster.
+
+| Size | CPU | Memory | Suggested data / WAL |
+|---|---|---|---|
+| `xs` | 500m | 1Gi | 10Gi / – |
+| `s` | 1 | 4Gi | 20Gi / 5Gi |
+| `m` | 2 | 8Gi | 50Gi / 10Gi |
+| `l` | 4 | 16Gi | 100Gi / 20Gi |
+| `xl` | 8 | 32Gi | 250Gi / 50Gi |
+
+- **A size or resources:** `spec.size` and `spec.resources` can't be set together. Without either,
+  instances get 500m CPU and 1Gi memory. To move a cluster to a size, set `size` and remove
+  `resources` in the same change (a merge patch with `"resources": null`).
+- **Admission:** a new cluster, or a change of size, must name a size that's in the catalog
+  ([`apis/postgrescluster/policies.yaml`](apis/postgrescluster/policies.yaml), a
+  ValidatingAdmissionPolicy with the catalog as its parameter).
+- **`status.sizing`:** what the instances run with: the size, its resources and its settings.
+  `kubectl get postgrescluster` shows the size in the `SIZE` column.
+- **Catalog changes:** changing a size in the catalog resizes every cluster of that size (rolling,
+  primary last). Removing a size stops new clusters from picking it; clusters that have it keep what
+  `status.sizing` says. If the catalog can't be read, running clusters also keep `status.sizing`,
+  never the defaults.
 
 ## Differences from `cp-controlplane-poc` (v1 style)
 
@@ -394,6 +427,8 @@ taken after the switchover: restore from before it out of the protected site's f
 apis/postgrescluster/definition.yaml       XRD (the API contract)
 apis/postgrescluster/composition.tmpl.yaml composition source -- edit this
 apis/postgrescluster/composition.yaml      GENERATED (make generate)
+apis/postgrescluster/sizes.yaml            the size catalog (EnvironmentConfig postgres-sizes), installed once
+apis/postgrescluster/policies.yaml         spec.size must be in the catalog
 src/dashboards/cnpg-cluster.json           CNPG Grafana dashboard (Apache-2.0)
 src/alerts/cnpg-cluster-rules.yaml         CNPG alerts from the cnpg/cluster chart (hack/refresh-alerts.sh)
 apis/location/definition.yaml              Location XRD (cluster-scoped): another Kubernetes cluster
@@ -417,7 +452,7 @@ On the control plane (Prometheus Operator and grafana-operator there for each Pr
 Prometheus and Grafana; CloudNativePG isn't needed there):
 
 ```sh
-install/install.sh                        # Crossplane 2.4.2 + everything above
+install/install.sh                        # Crossplane 2.4.2 + everything above (+ the size catalog, once)
 SKIP_CROSSPLANE=true install/install.sh   # Crossplane already installed
 install/add-location.sh dc-a dc-a.kubeconfig      # every location: ../operator/install.sh there first
 kubectl apply -f examples/project-defaults.yaml   # edit the ingress hosts first
@@ -453,13 +488,15 @@ site, connect to that location instead.
 
 ```sh
 make generate   # after editing composition.tmpl.yaml or src/
-make test       # crossplane render for every API (PostgresCluster: 16 cases incl. geo-replicated,
+make test       # crossplane render for every API (PostgresCluster: 20 cases incl. sizes (from the
+                # catalog, retired, changed to or created with an unknown one), geo-replicated,
                 # switchover/failover/promoted, draining, pinned sites, no Project, the Project's
                 # backup bucket and one still provisioning, restores from the bucket, from a store
                 # of its own and from a bucket not ready yet; Project: 6 cases incl. both sites, a
                 # COSI bucket and an unregistered location; Location: connected, ready,
                 # unreachable; each empty and observed where it matters; required/ mocks the
-                # Projects, Locations and EnvironmentConfig), crossplane resource validate against
+                # Projects, Locations and EnvironmentConfig, plus the shipped size catalog),
+                # crossplane resource validate against
                 # the CNPG/Barman/Prometheus/Grafana/provider-kubernetes/ClusterUsage CRDs
                 # (manifests inside Objects too), assertions
 python3 hack/observe.py project full   # regenerate an observed-state fixture after changing a composition

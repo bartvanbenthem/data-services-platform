@@ -1,4 +1,5 @@
-# Every feature of the API switched on: WAL on its own volume, quorum
+# Every feature of the API switched on: a size from the catalog with some
+# settings of its own, WAL on its own volume, quorum
 # synchronous replication, PgBouncer (rw + ro), S3 backups through the Barman
 # Cloud plugin, extra databases/roles, external LoadBalancer, monitoring.
 #
@@ -15,21 +16,17 @@ metadata:
 spec:
   postgresVersion: 17
   instances: 3
+  # 2 vCPU, 8Gi memory and tuned settings (apis/postgrescluster/sizes.yaml);
+  # or resources: {requests: ..., limits: ...} instead.
+  size: m
   storage:
     size: 50Gi
   walStorage:
     size: 10Gi
-  resources:
-    requests:
-      cpu: "1"
-      memory: 4Gi
-    limits:
-      memory: 4Gi
   postgresql:
     parameters:
+      # On top of the size's settings.
       max_connections: "300"
-      shared_buffers: 1GB
-      effective_cache_size: 3GB
       pg_stat_statements.max: "10000"
       pg_stat_statements.track: all
   database:

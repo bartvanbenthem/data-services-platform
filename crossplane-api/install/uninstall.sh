@@ -33,6 +33,7 @@ fi
 kubectl delete -f "${API_DIR}/project/policies.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/project/composition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/project/definition.yaml" --ignore-not-found
+kubectl delete -f "${API_DIR}/postgrescluster/policies.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/postgrescluster/composition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/postgrescluster/definition.yaml" --ignore-not-found
 if kubectl get crd locations.platform.cncp.nl >/dev/null 2>&1; then
@@ -41,6 +42,7 @@ fi
 kubectl delete -f "${API_DIR}/location/composition.yaml" --ignore-not-found
 kubectl delete -f "${API_DIR}/location/definition.yaml" --ignore-not-found
 kubectl delete -f "${SCRIPT_DIR}/functions.yaml" --ignore-not-found
+# The postgres-sizes catalog stays, like project-defaults.
 # Location kubeconfig Secrets stay (the portal's, or add-location.sh's).
 # Leftovers of locations registered before the Location API:
 kubectl delete clusterproviderconfigs.kubernetes.m.crossplane.io --all --ignore-not-found 2>/dev/null || true

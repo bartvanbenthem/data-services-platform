@@ -62,6 +62,7 @@ describe('ProjectListPage', () => {
 describe('CreateClusterPage', () => {
   const base: Partial<CnpgApi> = {
     getConfig: jest.fn(async () => ({ storageClasses: [] })),
+    listSizes: jest.fn(async () => []),
   };
 
   it('offers projects instead of free-text namespaces', async () => {
@@ -82,6 +83,38 @@ describe('CreateClusterPage', () => {
     await renderInTestApp(<CreateClusterPage />, apis(api) as any);
     expect(await screen.findByText('No projects yet')).toBeInTheDocument();
     expect(screen.getByText('Create project')).toBeInTheDocument();
+  });
+
+  it("starts at the catalog's first size, with its volumes", async () => {
+    const api: Partial<CnpgApi> = {
+      ...base,
+      listProjects: jest.fn(async () => [project({})]),
+      listSizes: jest.fn(async () => [
+        {
+          name: 's',
+          displayName: 'S',
+          description: 'Small production workloads',
+          resources: { requests: { cpu: '1', memory: '4Gi' } },
+          parameters: { shared_buffers: '1GB' },
+          storage: { size: '20Gi', walSize: '5Gi' },
+        },
+      ]),
+    };
+    await renderInTestApp(<CreateClusterPage />, apis(api) as any);
+    expect(await screen.findByText(/PostgreSQL tuned: shared_buffers 1GB/)).toBeInTheDocument();
+    // The manifest preview: the size instead of resources, and its volumes.
+    const manifest = () => document.querySelector('pre')?.textContent ?? '';
+    await waitFor(() => expect(manifest()).toMatch(/^ {2}size: s$/m));
+    expect(manifest()).not.toMatch(/resources:/);
+    expect(screen.queryByLabelText('CPU request')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('20Gi')).toBeInTheDocument();
+  });
+
+  it('offers custom resources without a catalog', async () => {
+    const api: Partial<CnpgApi> = { ...base, listProjects: jest.fn(async () => [project({})]) };
+    await renderInTestApp(<CreateClusterPage />, apis(api) as any);
+    expect(await screen.findByLabelText('CPU request')).toBeInTheDocument();
+    expect(screen.queryByText('Size')).not.toBeInTheDocument();
   });
 });
 

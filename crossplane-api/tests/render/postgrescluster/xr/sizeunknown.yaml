@@ -1,0 +1,8 @@
+# A new cluster with a size the catalog doesn't have: nothing is placed.
+apiVersion: cnpg.cncp.nl/v1alpha1
+kind: PostgresCluster
+metadata:
+  name: orders-db
+  namespace: demo
+spec:
+  size: huge

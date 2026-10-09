@@ -8,6 +8,7 @@ import type {
   BucketDetails,
   BucketSummary,
   ClusterConnection,
+  ClusterSize,
   LocationHealth,
   LocationSpec,
   LocationSummary,
@@ -94,6 +95,8 @@ export interface PatchRequest {
 /** Client for the cnpg backend plugin (/api/cnpg). */
 export interface CnpgApi {
   getConfig(): Promise<CnpgPortalConfig>;
+  /** The sizes (SKUs) spec.size can name, in catalog order; empty without a catalog. */
+  listSizes(): Promise<ClusterSize[]>;
   listClusters(namespace?: string): Promise<PostgresClusterSummary[]>;
   getCluster(namespace: string, name: string): Promise<PostgresClusterDetails>;
   createCluster(request: CreateClusterRequest): Promise<PostgresCluster>;
@@ -153,6 +156,10 @@ export class CnpgClient implements CnpgApi {
 
   getConfig() {
     return this.#request<CnpgPortalConfig>('/config');
+  }
+
+  async listSizes() {
+    return (await this.#request<{ items: ClusterSize[] }>('/sizes')).items;
   }
 
   async listClusters(namespace?: string) {

@@ -40,6 +40,7 @@ import {
   PostgresCluster,
   promotionPatch,
   PostgresClusterSummary,
+  parseSizes,
   projectLocations,
   RestoreSource,
   restoreSpec,
@@ -242,6 +243,12 @@ export async function createRouter(options: {
       defaultNamespace: config.getOptionalString('cnpg.defaultNamespace'),
       storageClasses: config.getOptionalStringArray('cnpg.storageClasses') ?? [],
     });
+  });
+
+  // The sizes (SKUs) spec.size can name; empty without a catalog.
+  router.get('/sizes', async (req, res) => {
+    await authorize(req, cnpgClusterReadPermission);
+    res.json({ items: parseSizes(await k8s.sizesCatalog()) });
   });
 
   router.get('/namespaces', async (req, res) => {
